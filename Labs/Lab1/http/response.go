@@ -15,9 +15,9 @@ type Response struct {
 }
 
 func NewResponse(request *http.Request) *Response {
-	protocol := request.Proto
+	protocol := request.Proto  // Mirror the protocol of the request
 	if protocol == "" {
-		protocol = "HTTP/1.1"  // Use HTTP/1.1 by default
+		protocol = "HTTP/1.1"  // Otherwise use HTTP/1.1 by default
 	}
 	return &Response{
 		Request:    request,
