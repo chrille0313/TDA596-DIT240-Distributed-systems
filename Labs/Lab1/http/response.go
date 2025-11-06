@@ -1,23 +1,58 @@
 package http
 
-// import (
-// 	"net"
-// 	"net/http"
-// )
+import (
+	"fmt"
+	"net/http"
+	"strings"
+)
 
-// type MyResponseWriter struct {
-// 	connection net.Conn
-// 	headers    http.Header
-// }
+type Response struct {
+	Request    *http.Request
+	Protocol   string
+	StatusCode StatusCode
+	Headers    Headers
+	Body       string
+}
 
-// func (*MyResponseWriter) Write([]byte) (int, error) {
+func NewResponse(request *http.Request) *Response {
+	protocol := request.Proto
+	if protocol == "" {
+		protocol = "HTTP/1.1"  // Use HTTP/1.1 by default
+	}
+	return &Response{
+		Request:    request,
+		Protocol:   protocol,
+		StatusCode: Ok,
+		Headers:    make(Headers),
+		Body:       "",
+	}
+}
 
-// }
+func (response *Response) formatStartLine() string {
+	return fmt.Sprintf("%s %d %s\r\n", response.Protocol, response.StatusCode, response.StatusCode.Phrase())
+}
 
-// func (writer *MyResponseWriter) Header() http.Header {
-// 	return writer.headers
-// }
+func (response *Response) formatHeaders() string {
+	headers := ""
+	for key, values := range response.Headers {
+		header := key + ": " + strings.Join(values, ", ") + "\r\n"
+		headers += header
+	}
+	return headers
+}
 
-// func (*MyResponseWriter) WriteHeader(statusCode int) {
+func (response *Response) String() string {
+	s := response.formatStartLine()
+	s += response.formatHeaders()
 
-// }
+	if response.Body != "" {
+		s += "\r\n"
+		s += response.Body
+	}
+
+	return s
+}
+
+func (response *Response) Bytes() []byte {
+	return []byte(response.String())
+}

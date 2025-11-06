@@ -8,34 +8,34 @@ import (
 	"net/http"
 )
 
-type RequestHandler func(*http.Request, *http.Response)
+type RequestHandler func(*http.Request, *ResponseBuilder)
 
 type Server struct {
 	connections     chan net.Conn
-	requestHandlers map[RequestMethod]RequestHandler
+	requestHandlers map[HTTPMethod]RequestHandler
 }
 
 func NewServer() *Server {
 	return &Server{
-		requestHandlers: make(map[RequestMethod]RequestHandler),
+		requestHandlers: make(map[HTTPMethod]RequestHandler),
 	}
 }
 
-func (server *Server) handleRequest(request *http.Request) http.Response {
-	method, err := RequestMethod(0).FromString(request.Method)
-	if err != nil {
-		fmt.Println("Unsupported method:", request.Method)
+func (server *Server) handleRequest(request *http.Request) *Response {
+	responseBuilder := NewResponseBuilder(request)
+	
+	method := HTTPMethod(request.Method)
+	if !method.IsValid() {
+		return responseBuilder.Status(BadRequest).Build()
 	}
 
 	handler, exists := server.requestHandlers[method]
 	if !exists {
-		fmt.Println("No handler registered for method:", request.Method)
+		return responseBuilder.Status(NotImplemented).Build()
 	}
 
-	response := &http.Response{}
-	handler(request, response)
-
-	return *response
+	handler(request, responseBuilder)
+	return responseBuilder.Build()
 }
 
 func (server *Server) handleConnection(connection net.Conn) {
@@ -46,7 +46,6 @@ func (server *Server) handleConnection(connection net.Conn) {
 
 	reader := bufio.NewReader(connection)
 	request, err := http.ReadRequest(reader)
-
 	if err != nil {
 		fmt.Println("Error reading request:", err)
 		return
@@ -54,17 +53,18 @@ func (server *Server) handleConnection(connection net.Conn) {
 
 	response := server.handleRequest(request)
 
-	s := "HTTP/1.1 " + fmt.Sprint(response.StatusCode) + " " + string(response.Status) + "\r\n"
-	fmt.Println(s)
-	b := []byte(s)
-	fmt.Println(b)
-	connection.Write(b)
+	log.Println(connection.RemoteAddr(), "-", request.Method, request.URL.Path, request.Proto, response.StatusCode, response.Headers["Content-Length"])
+
+	_, err = connection.Write(response.Bytes())
+	if err != nil {
+		fmt.Println("Error writing response:", err)
+		return
+	}
 }
 
 func (server *Server) Listen(address string, maxConnections uint) {
 	server.connections = make(chan net.Conn, maxConnections)
 	listener, err := net.Listen("tcp", address)
-
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -76,7 +76,6 @@ func (server *Server) Listen(address string, maxConnections uint) {
 
 	for {
 		connection, err := listener.Accept()
-
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -86,7 +85,7 @@ func (server *Server) Listen(address string, maxConnections uint) {
 	}
 }
 
-func (server *Server) registerHandler(method RequestMethod, handler RequestHandler) {
+func (server *Server) registerHandler(method HTTPMethod, handler RequestHandler) {
 	server.requestHandlers[method] = handler
 }
 

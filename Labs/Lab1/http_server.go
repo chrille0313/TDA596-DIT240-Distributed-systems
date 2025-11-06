@@ -4,7 +4,7 @@ import (
 	"flag"
 	"http_server/http"
 	"net"
-	f "net/http"
+	builtInHttp "net/http"
 )
 
 func main() {
@@ -26,15 +26,15 @@ func main() {
 	address := net.JoinHostPort(*host, *port)
 	server := http.NewServer()
 
-	// FIXME: implement correctly
-	server.Get(func(req *f.Request, res *f.Response) {
-		res.StatusCode = 200
-		res.Status = "OK"
+	// TODO: Read and return file from server
+	server.Get(func(req *builtInHttp.Request, res *http.ResponseBuilder) {
+		res.Body("Hello, World!")
 	})
 
-	// server.
-
-	// END FIXME
+	server.Post(func(req *builtInHttp.Request, res *http.ResponseBuilder) {
+		// TODO: Create file on server
+		res.Status(http.Created)
+	})
 
 	server.Listen(address, *maxConnections)
 }
