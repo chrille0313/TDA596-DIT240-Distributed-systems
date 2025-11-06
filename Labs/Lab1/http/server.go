@@ -21,20 +21,21 @@ func NewServer() *Server {
 	}
 }
 
-func (server *Server) handleRequest(request *http.Request) {
+func (server *Server) handleRequest(request *http.Request) http.Response {
 	method, err := RequestMethod(0).FromString(request.Method)
 	if err != nil {
 		fmt.Println("Unsupported method:", request.Method)
-		return
 	}
 
 	handler, exists := server.requestHandlers[method]
 	if !exists {
 		fmt.Println("No handler registered for method:", request.Method)
-		return
 	}
 
-	handler(request, nil)  // FIXME: don't pass nil
+	response := &http.Response{}
+	handler(request, response)
+
+	return *response
 }
 
 func (server *Server) handleConnection(connection net.Conn) {
@@ -51,7 +52,13 @@ func (server *Server) handleConnection(connection net.Conn) {
 		return
 	}
 
-	server.handleRequest(request)
+	response := server.handleRequest(request)
+
+	s := "HTTP/1.1 " + fmt.Sprint(response.StatusCode) + " " + string(response.Status) + "\r\n"
+	fmt.Println(s)
+	b := []byte(s)
+	fmt.Println(b)
+	connection.Write(b)
 }
 
 func (server *Server) Listen(address string, maxConnections uint) {

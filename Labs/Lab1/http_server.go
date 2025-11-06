@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"http_server/http"
 	"net"
 	f "net/http"
@@ -13,7 +12,7 @@ func main() {
 	port := flag.String("port", "8080", "Port to listen on")
 	portAlias := flag.String("p", "", "Alias for -port")
 	maxConnections := flag.Uint("maxConnections", 10, "Maximum concurrent connections")
-	
+
 	flag.Parse()
 
 	if *portAlias != "" {
@@ -29,7 +28,8 @@ func main() {
 
 	// FIXME: implement correctly
 	server.Get(func(req *f.Request, res *f.Response) {
-		fmt.Println("INSIDE GET")
+		res.StatusCode = 200
+		res.Status = "OK"
 	})
 
 	// server.
