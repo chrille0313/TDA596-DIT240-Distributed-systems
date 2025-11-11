@@ -21,21 +21,36 @@ func NewServer() *Server {
 	}
 }
 
-func (server *Server) handleRequest(request *http.Request) *Response {
+func (server *Server) handleError(err error) *Response {
+	status := InternalServerError
+
+	httpErr, ok := err.(*HTTPError)
+	if ok {
+		status = httpErr.Status
+	}
+
+	return &Response{
+		Protocol:   "HTTP/1.1",
+		StatusCode: status,
+		Headers:    make(Headers),
+	}
+}
+
+func (server *Server) handleRequest(request *http.Request) (*Response, error) {
 	responseBuilder := NewResponseBuilder(request)
-	
+
 	method := HTTPMethod(request.Method)
 	if !method.IsValid() {
-		return responseBuilder.Status(BadRequest).Build()
+		return nil, &HTTPError{Status: BadRequest}
 	}
 
 	handler, exists := server.requestHandlers[method]
 	if !exists {
-		return responseBuilder.Status(NotImplemented).Build()
+		return nil, &HTTPError{Status: NotImplemented}
 	}
 
 	handler(request, responseBuilder)
-	return responseBuilder.Build()
+	return responseBuilder.Build(), nil
 }
 
 func (server *Server) handleConnection(connection net.Conn) {
@@ -44,22 +59,22 @@ func (server *Server) handleConnection(connection net.Conn) {
 		<-server.connections
 	}()
 
+	var response *Response;
 	reader := bufio.NewReader(connection)
 	request, err := http.ReadRequest(reader)
+
+	// FIXME: might be wrong?
 	if err != nil {
-		fmt.Println("Error reading request:", err)
-		return
+		err = &HTTPError{Status: BadRequest}
+	} else {
+		response, err = server.handleRequest(request)
 	}
 
-	response := server.handleRequest(request)
-
-	log.Println(connection.RemoteAddr(), "-", request.Method, request.URL.Path, request.Proto, response.StatusCode, response.Headers["Content-Length"])
-
-	_, err = connection.Write(response.Bytes())
 	if err != nil {
-		fmt.Println("Error writing response:", err)
-		return
+		response = server.handleError(err)
 	}
+
+	server.writeResponse(connection, response)
 }
 
 func (server *Server) Listen(address string, maxConnections uint) {
@@ -72,7 +87,7 @@ func (server *Server) Listen(address string, maxConnections uint) {
 	defer listener.Close()
 	defer close(server.connections)
 
-	fmt.Println("Listening on " + address)
+	log.Println("Listening on", address)
 
 	for {
 		connection, err := listener.Accept()
@@ -95,4 +110,15 @@ func (server *Server) Get(handler RequestHandler) {
 
 func (server *Server) Post(handler RequestHandler) {
 	server.registerHandler(Post, handler)
+}
+
+func (server *Server) writeResponse(connection net.Conn, response *Response) error {
+	if response == nil {
+		return fmt.Errorf("response cannot be nil")
+	}
+
+	log.Println(connection.RemoteAddr(), "-", response.StatusCode)
+	
+	_, err := connection.Write(response.Bytes())
+	return err
 }
