@@ -8,7 +8,7 @@ import (
 	"net/http"
 )
 
-type RequestHandler func(*http.Request, *ResponseBuilder)
+type RequestHandler func(*http.Request, *ResponseBuilder) error
 
 type Server struct {
 	connections     chan net.Conn
@@ -49,7 +49,12 @@ func (server *Server) handleRequest(request *http.Request) (*Response, error) {
 		return nil, &HTTPError{Status: NotImplemented}
 	}
 
-	handler(request, responseBuilder)
+	err := handler(request, responseBuilder)
+
+	if err != nil {
+		return nil, err
+	}
+
 	return responseBuilder.Build(), nil
 }
 
@@ -59,7 +64,7 @@ func (server *Server) handleConnection(connection net.Conn) {
 		<-server.connections
 	}()
 
-	var response *Response;
+	var response *Response
 	reader := bufio.NewReader(connection)
 	request, err := http.ReadRequest(reader)
 
@@ -118,7 +123,7 @@ func (server *Server) writeResponse(connection net.Conn, response *Response) err
 	}
 
 	log.Println(connection.RemoteAddr(), "-", response.StatusCode)
-	
+
 	_, err := connection.Write(response.Bytes())
 	return err
 }

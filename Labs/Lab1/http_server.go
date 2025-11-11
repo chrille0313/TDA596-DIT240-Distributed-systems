@@ -4,7 +4,6 @@ import (
 	"flag"
 	"http_server/http"
 	"net"
-	builtInHttp "net/http"
 )
 
 func main() {
@@ -26,15 +25,8 @@ func main() {
 	address := net.JoinHostPort(*host, *port)
 	server := http.NewServer()
 
-	// TODO: Read and return file from server
-	server.Get(func(req *builtInHttp.Request, res *http.ResponseBuilder) {
-		res.Body("Hello, World!")
-	})
-
-	server.Post(func(req *builtInHttp.Request, res *http.ResponseBuilder) {
-		// TODO: Create file on server
-		res.Status(http.Created)
-	})
+	server.Get(FileGetHandler)
+	server.Post(FilePostHandler)
 
 	server.Listen(address, *maxConnections)
 }

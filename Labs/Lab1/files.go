@@ -1,11 +1,15 @@
-package http
+package main
 
 import (
-	"io"
-	"net/http"
 	"os"
-	"path/filepath"
+	"io"
+	"fmt"
+	"errors"
 	"strings"
+	"path/filepath"
+	"http_server/http"
+	builtInHttp "net/http"
+	"github.com/google/uuid"
 )
 
 // Vne vad vi ska ha för Dir här, chat la in denna
@@ -32,7 +36,8 @@ func checkContentType(ext string) string {
 // line 33-68 gör lite olika säkerhetskontrollen innan själva filen faktiskt läses in
 // Denna lösningen är inte optimal för stora filer, vet inte hur avancerat vi ska göra det
 func myReadFunction(reqPath string) ([]byte, string, error) {
-	clean := filepath.Clean("/" + reqPath)
+	fmt.Println(reqPath)
+	clean := filepath.Clean(reqPath)
 	full := filepath.Join(baseDir, clean)
 
 	absBase, err := filepath.Abs(baseDir)
@@ -52,20 +57,16 @@ func myReadFunction(reqPath string) ([]byte, string, error) {
 	// Hantera kataloger (t.ex. / -> index.html)
 	fi, err := os.Stat(absFull)
 	if err != nil {
+		fmt.Println(err)
 		return nil, "", err
 	}
 	if fi.IsDir() {
-		index := filepath.Join(absFull, "index.html")
-		if _, err := os.Stat(index); err == nil {
-			absFull = index
-		} else {
-			return nil, "", os.ErrNotExist
-		}
+		return nil, "", os.ErrInvalid
 	}
 
 	// Kontrollera filänderlsen (om inte tillåten returnerar vi tom ctype och låter handleren svara 400)
 	ext := strings.ToLower(filepath.Ext(absFull))
-	ctype := checkContentType(ext)
+	contentType := checkContentType(ext)
 
 	//här läser vi själva filen
 	data, err := os.ReadFile(absFull)
@@ -73,130 +74,100 @@ func myReadFunction(reqPath string) ([]byte, string, error) {
 		return nil, "", err
 	}
 
-	return data, ctype, nil
+	return data, contentType, nil
 }
 
 // hanterar GET-förfrågningar
-func FileGetHandler(r *http.Request, rb *ResponseBuilder) {
+func FileGetHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
 	p := r.URL.Path
 
-	data, ctype, err := myReadFunction(p)
+	data, contentType, err := myReadFunction(p)
 	if err != nil {
+		status := http.InternalServerError
+
 		if os.IsNotExist(err) {
-			rb.Status(NotFound).Body("404 not found")
-			return
+			status = http.NotFound
+		} else if os.IsPermission(err) {
+			status = http.BadRequest
+		} else if errors.Is(err, os.ErrInvalid) {
+			status = http.BadRequest
 		}
-		if os.IsPermission(err) {
-			rb.Status(BadRequest).Body("invalid path")
-			return
-		}
-		rb.Status(InternalServerError).Body("internal error")
-		return
+
+		return &http.HTTPError{Status: status}
 	}
 
-	if ctype == "" {
-		rb.Status(BadRequest).Body("400 bad request")
-		return
+	if contentType == "" {
+		return &http.HTTPError{http.BadRequest}
 	}
 
-	rb.Header("Content-Type", ctype)
+	rb.Bytes(data).Header("Content-Type", contentType)
 
-	if strings.HasPrefix(ctype, "text/") || strings.Contains(ctype, "json") || strings.Contains(ctype, "xml") {
-		rb.Body(string(data))
-	} else {
-		// Temporärt: konvertera även binärt till string (kan korrupta binära data).
-		// Ett bättre tillvägagångssätt är att uppgradera Response/ResponseBuilder för []byte.
-		rb.Body(string(data))
-	}
-	rb.Status(Ok)
+	return nil
 }
 
 // FilePostHandler hanterar filuppladdningar. Den accepterar multipart/form-data med fältet "file"
 // eller en raw POST där URL-path innehåller målfilens namn. Endast tillåtna filändelser sparas (enl. labbinstruktion)
-func FilePostHandler(r *http.Request, rb *ResponseBuilder) {
+func FilePostHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
 	// Maxstorlek för enkelhets skull (10 MB)
 	const maxUploadSize = 10 << 20
 
-	ct := r.Header.Get("Content-Type")
+	// contentType := r.Header.Get("Content-Type")
 	var filename string
 	var reader io.Reader
 
-	if strings.HasPrefix(ct, "multipart/form-data") {
-		if err := r.ParseMultipartForm(maxUploadSize); err != nil {
-			rb.Status(BadRequest).Body("400 bad request")
-			return
-		}
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			rb.Status(BadRequest).Body("400 bad request")
-			return
-		}
-		defer file.Close()
-		filename = filepath.Base(header.Filename)
-		reader = file
-	} else {
-		// Raw body: use URL path as filename
-		filename = filepath.Base(r.URL.Path)
-		if filename == "" || filename == "/" {
-			rb.Status(BadRequest).Body("400 bad request")
-			return
-		}
-		reader = r.Body
-		defer r.Body.Close()
+	// Raw body: use URL path as filename
+	filename = filepath.Base(r.URL.Path)
+	if filename == "" || filename == "/" {
+		return &http.HTTPError{http.BadRequest}
 	}
+	reader = r.Body
+	defer r.Body.Close()
 
 	ext := strings.ToLower(filepath.Ext(filename))
 	if checkContentType(ext) == "" {
-		rb.Status(BadRequest).Body("400 bad request")
-		return
+		return &http.HTTPError{http.BadRequest}
 	}
 
 	// Säker join och abs-path kontroll
 	dest := filepath.Join(baseDir, filepath.Clean("/"+filename))
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
-		rb.Status(InternalServerError).Body("internal error")
-		return
+		return &http.HTTPError{http.InternalServerError}
 	}
 	absDest, err := filepath.Abs(dest)
 	if err != nil {
-		rb.Status(InternalServerError).Body("internal error")
-		return
+		return &http.HTTPError{http.InternalServerError}
 	}
 	if !strings.HasPrefix(absDest, absBase) {
-		rb.Status(BadRequest).Body("400 bad request")
-		return
+		return &http.HTTPError{http.BadRequest}
 	}
 
 	// Skriv till temporär fil och byt sedan namn (atomiskt)
-	tmp, err := os.CreateTemp(baseDir, "upload-*")
+	id := uuid.New()
+	tmp, err := os.CreateTemp(baseDir, "upload-"+id.String())
 	if err != nil {
-		rb.Status(InternalServerError).Body("internal error")
-		return
+		return &http.HTTPError{http.InternalServerError}
 	}
 	tmpName := tmp.Name()
 	if _, err := io.Copy(tmp, reader); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		rb.Status(InternalServerError).Body("internal error")
-		return
+		return &http.HTTPError{http.InternalServerError}
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		rb.Status(InternalServerError).Body("internal error")
-		return
+		return &http.HTTPError{http.InternalServerError}
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		rb.Status(InternalServerError).Body("internal error")
-		return
+		return &http.HTTPError{http.InternalServerError}
 	}
 	if err := os.Rename(tmpName, absDest); err != nil {
 		os.Remove(tmpName)
-		rb.Status(InternalServerError).Body("internal error")
-		return
+		return &http.HTTPError{http.InternalServerError}
 	}
 
-	rb.Status(Created).Body("201 created")
+	rb.Status(http.Created)
+	return nil
 }

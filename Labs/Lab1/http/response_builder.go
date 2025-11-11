@@ -30,12 +30,15 @@ func (builder *ResponseBuilder) Header(key string, value string) *ResponseBuilde
 	return builder
 }
 
-// TODO: adapt body + content-type to the actual type
-func (builder *ResponseBuilder) Body(body string) *ResponseBuilder {
+func (builder *ResponseBuilder) Bytes(body []byte) *ResponseBuilder {
 	builder.response.Body = body
 	builder.response.Headers["Content-Type"] = []string{"text/plain"}
 	builder.response.Headers["Content-Length"] = []string{strconv.Itoa(len(body))}
 	return builder
+}
+
+func (builder *ResponseBuilder) Body(body string) *ResponseBuilder {
+	return builder.Bytes([]byte(body))
 }
 
 func (builder *ResponseBuilder) Build() *Response {
