@@ -7,7 +7,6 @@ import (
 )
 
 type Response struct {
-	Request    *http.Request
 	Protocol   string
 	StatusCode StatusCode
 	Headers    Headers
@@ -15,12 +14,12 @@ type Response struct {
 }
 
 func NewResponse(request *http.Request) *Response {
-	protocol := request.Proto  // Mirror the protocol of the request
-	if protocol == "" {
-		protocol = "HTTP/1.1"  // Otherwise use HTTP/1.1 by default
+	protocol := "HTTP/1.1"
+	if request != nil && request.Proto != "" {
+		protocol = request.Proto
 	}
+
 	return &Response{
-		Request:    request,
 		Protocol:   protocol,
 		StatusCode: Ok,
 		Headers:    make(Headers),
@@ -38,15 +37,21 @@ func (response *Response) formatHeaders() string {
 		header := key + ": " + strings.Join(values, ", ") + "\r\n"
 		headers += header
 	}
+
 	return headers
+}
+
+func (response *Response) hasBody() bool {
+	_, ok := response.Headers["Content-Length"]
+	return ok
 }
 
 func (response *Response) String() string {
 	s := response.formatStartLine()
 	s += response.formatHeaders()
+	s += "\r\n"
 
-	if response.Body != "" {
-		s += "\r\n"
+	if response.hasBody() {	
 		s += response.Body
 	}
 
