@@ -1,14 +1,15 @@
 package main
 
 import (
-	"os"
-	"io"
-	"fmt"
+	"Lab1/http"
 	"errors"
-	"strings"
-	"path/filepath"
-	"http_server/http"
+	"fmt"
+	"io"
 	builtInHttp "net/http"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/google/uuid"
 )
 
