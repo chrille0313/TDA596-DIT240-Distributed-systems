@@ -98,7 +98,7 @@ func FileGetHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
 	}
 
 	if contentType == "" {
-		return &http.HTTPError{http.BadRequest}
+		return &http.HTTPError{Status: http.BadRequest}
 	}
 
 	rb.Bytes(data).Header("Content-Type", contentType)
@@ -106,7 +106,7 @@ func FileGetHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
 	return nil
 }
 
-// FilePostHandler hanterar filuppladdningar. Den accepterar multipart/form-data med fältet "file"
+// FilePostHandler hanterar filuppladdningar.
 // eller en raw POST där URL-path innehåller målfilens namn. Endast tillåtna filändelser sparas (enl. labbinstruktion)
 func FilePostHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
 	// Maxstorlek för enkelhets skull (10 MB)
@@ -119,54 +119,54 @@ func FilePostHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
 	// Raw body: use URL path as filename
 	filename = filepath.Base(r.URL.Path)
 	if filename == "" || filename == "/" {
-		return &http.HTTPError{http.BadRequest}
+		return &http.HTTPError{Status: http.BadRequest}
 	}
 	reader = r.Body
 	defer r.Body.Close()
 
 	ext := strings.ToLower(filepath.Ext(filename))
 	if checkContentType(ext) == "" {
-		return &http.HTTPError{http.BadRequest}
+		return &http.HTTPError{Status: http.BadRequest}
 	}
 
 	// Säker join och abs-path kontroll
 	dest := filepath.Join(baseDir, filepath.Clean("/"+filename))
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
-		return &http.HTTPError{http.InternalServerError}
+		return &http.HTTPError{Status: http.InternalServerError}
 	}
 	absDest, err := filepath.Abs(dest)
 	if err != nil {
-		return &http.HTTPError{http.InternalServerError}
+		return &http.HTTPError{Status: http.InternalServerError}
 	}
 	if !strings.HasPrefix(absDest, absBase) {
-		return &http.HTTPError{http.BadRequest}
+		return &http.HTTPError{Status: http.BadRequest}
 	}
 
 	// Skriv till temporär fil och byt sedan namn (atomiskt)
 	id := uuid.New()
 	tmp, err := os.CreateTemp(baseDir, "upload-"+id.String())
 	if err != nil {
-		return &http.HTTPError{http.InternalServerError}
+		return &http.HTTPError{Status: http.InternalServerError}
 	}
 	tmpName := tmp.Name()
 	if _, err := io.Copy(tmp, reader); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return &http.HTTPError{http.InternalServerError}
+		return &http.HTTPError{Status: http.InternalServerError}
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return &http.HTTPError{http.InternalServerError}
+		return &http.HTTPError{Status: http.InternalServerError}
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return &http.HTTPError{http.InternalServerError}
+		return &http.HTTPError{Status: http.InternalServerError}
 	}
 	if err := os.Rename(tmpName, absDest); err != nil {
 		os.Remove(tmpName)
-		return &http.HTTPError{http.InternalServerError}
+		return &http.HTTPError{Status: http.InternalServerError}
 	}
 
 	rb.Status(http.Created)
