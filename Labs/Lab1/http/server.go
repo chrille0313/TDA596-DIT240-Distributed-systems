@@ -40,10 +40,6 @@ func (server *Server) handleRequest(request *http.Request) (*Response, error) {
 	responseBuilder := NewResponseBuilder(request)
 
 	method := HTTPMethod(request.Method)
-	if !method.IsValid() {
-		return nil, &HTTPError{Status: BadRequest}
-	}
-
 	handler, exists := server.requestHandlers[method]
 	if !exists {
 		return nil, &HTTPError{Status: NotImplemented}
