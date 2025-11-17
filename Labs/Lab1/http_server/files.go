@@ -1,171 +1,132 @@
 package main
 
 import (
-	"Lab1/http"
 	"errors"
-	"fmt"
 	"io"
-	builtInHttp "net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
-// Vne vad vi ska ha för Dir här, chat la in denna
-var baseDir = "./public"
+const publicDir = "./public"
 
-// används för content-type fältet, dessa är dom som är tillåtna enl. labbinstruktion
-func checkContentType(ext string) string {
-	switch strings.ToLower(ext) {
-	case ".html":
-		return "text/html"
-	case ".txt":
-		return "text/plain"
-	case ".css":
-		return "text/css"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	default:
-		return ""
+var (
+	allowedContentTypes = map[string]string{
+		".html": "text/html",
+		".txt":  "text/plain",
+		".css":  "text/css",
+		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
+		".gif":  "image/gif",
 	}
+	errUnsupportedContentType = errors.New("unsupported content type")
+)
+
+func contentTypeForPath(p string) (string, bool) {
+	ext := strings.ToLower(filepath.Ext(p))
+	contentType, ok := allowedContentTypes[ext]
+	return contentType, ok
 }
 
-// line 33-68 gör lite olika säkerhetskontrollen innan själva filen faktiskt läses in
-// Denna lösningen är inte optimal för stora filer, vet inte hur avancerat vi ska göra det
-func myReadFunction(reqPath string) ([]byte, string, error) {
-	fmt.Println(reqPath)
-	clean := filepath.Clean(reqPath)
-	full := filepath.Join(baseDir, clean)
+func resolvePath(requestPath string) (string, error) {
+	cleaned := path.Clean("/" + requestPath)
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	fullPath := filepath.Join(publicDir, cleaned)
 
-	absBase, err := filepath.Abs(baseDir)
+	absBase, err := filepath.Abs(publicDir)
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
-	absFull, err := filepath.Abs(full)
+
+	absFull, err := filepath.Abs(fullPath)
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
 
-	// Förhindra path traversal: absFull måste ligga under absBase
-	if !strings.HasPrefix(absFull, absBase) {
-		return nil, "", os.ErrPermission
-	}
-
-	// Hantera kataloger (t.ex. / -> index.html)
-	fi, err := os.Stat(absFull)
+	rel, err := filepath.Rel(absBase, absFull)
 	if err != nil {
-		fmt.Println(err)
-		return nil, "", err
-	}
-	if fi.IsDir() {
-		return nil, "", os.ErrInvalid
+		return "", err
 	}
 
-	// Kontrollera filänderlsen (om inte tillåten returnerar vi tom ctype och låter handleren svara 400)
-	ext := strings.ToLower(filepath.Ext(absFull))
-	contentType := checkContentType(ext)
-
-	//här läser vi själva filen
-	data, err := os.ReadFile(absFull)
-	if err != nil {
-		return nil, "", err
+	if strings.HasPrefix(rel, "..") {
+		return "", os.ErrPermission
 	}
 
-	return data, contentType, nil
+	return absFull, nil
 }
 
-// hanterar GET-förfrågningar
-func FileGetHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
-	p := r.URL.Path
-
-	data, contentType, err := myReadFunction(p)
+func readFile(requestPath string) ([]byte, error) {
+	diskPath, err := resolvePath(requestPath)
 	if err != nil {
-		status := http.InternalServerError
-
-		if os.IsNotExist(err) {
-			status = http.NotFound
-		} else if os.IsPermission(err) {
-			status = http.BadRequest
-		} else if errors.Is(err, os.ErrInvalid) {
-			status = http.BadRequest
-		}
-
-		return &http.HTTPError{Status: status}
+		return nil, err
 	}
 
-	if contentType == "" {
-		return &http.HTTPError{Status: http.BadRequest}
+	info, err := os.Stat(diskPath)
+	if err != nil {
+		return nil, err
 	}
 
-	rb.Bytes(data).Header("Content-Type", contentType)
+	if info.IsDir() {
+		return nil, os.ErrInvalid
+	}
 
-	return nil
+	data, err := os.ReadFile(diskPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
 }
 
-// FilePostHandler hanterar filuppladdningar.
-// eller en raw POST där URL-path innehåller målfilens namn. Endast tillåtna filändelser sparas (enl. labbinstruktion)
-func FilePostHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
-	// contentType := r.Header.Get("Content-Type")
-	var filename string
-	var reader io.Reader
-
-	// Raw body: use URL path as filename
-	filename = filepath.Base(r.URL.Path)
-	if filename == "" || filename == "/" {
-		return &http.HTTPError{Status: http.BadRequest}
-	}
-	reader = r.Body
-	defer r.Body.Close()
-
-	ext := strings.ToLower(filepath.Ext(filename))
-	if checkContentType(ext) == "" {
-		return &http.HTTPError{Status: http.BadRequest}
-	}
-
-	// Säker join och abs-path kontroll
-	dest := filepath.Join(baseDir, filepath.Clean("/"+filename))
-	absBase, err := filepath.Abs(baseDir)
+func saveUploadedFile(reader io.Reader, destination string) error {
+	tmp, err := os.CreateTemp(publicDir, "upload-")
 	if err != nil {
-		return &http.HTTPError{Status: http.InternalServerError}
+		return err
 	}
-	absDest, err := filepath.Abs(dest)
-	if err != nil {
-		return &http.HTTPError{Status: http.InternalServerError}
-	}
-	if !strings.HasPrefix(absDest, absBase) {
-		return &http.HTTPError{Status: http.BadRequest}
-	}
+	defer tmp.Close()
 
-	// Skriv till temporär fil och byt sedan namn (atomiskt)
-	id := uuid.New()
-	tmp, err := os.CreateTemp(baseDir, "upload-"+id.String())
-	if err != nil {
-		return &http.HTTPError{Status: http.InternalServerError}
-	}
 	tmpName := tmp.Name()
-	if _, err := io.Copy(tmp, reader); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return &http.HTTPError{Status: http.InternalServerError}
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return &http.HTTPError{Status: http.InternalServerError}
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return &http.HTTPError{Status: http.InternalServerError}
-	}
-	if err := os.Rename(tmpName, absDest); err != nil {
-		os.Remove(tmpName)
-		return &http.HTTPError{Status: http.InternalServerError}
+	defer os.Remove(tmpName)
+
+	_, err = io.Copy(tmp, reader)
+	if err != nil {
+		return err
 	}
 
-	rb.Status(http.Created)
+	err = tmp.Sync()
+	if err != nil {
+		return err
+	}
+
+	err = tmp.Close()
+	if err != nil {
+		return err
+	}
+
+	err = os.Rename(tmpName, destination)
+	if err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func writeFile(requestPath string, reader io.Reader) error {
+	filename := filepath.Base(requestPath)
+	if filename == "" || filename == "." || filename == "/" || filename == string(os.PathSeparator) {
+		return os.ErrInvalid
+	}
+
+	_, ok := contentTypeForPath(filename);
+	if !ok {
+		return errUnsupportedContentType
+	}
+
+	destination, err := resolvePath(filename)
+	if err != nil {
+		return err
+	}
+
+	return saveUploadedFile(reader, destination)
 }

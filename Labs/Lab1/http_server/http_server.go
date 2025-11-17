@@ -2,8 +2,10 @@ package main
 
 import (
 	"Lab1/http"
+	"errors"
 	"flag"
 	"net"
+	nethttp "net/http"
 	"os"
 )
 
@@ -32,8 +34,45 @@ func main() {
 	address := net.JoinHostPort(*host, *port)
 	server := http.NewServer()
 
-	server.Get(FileGetHandler)
-	server.Post(FilePostHandler)
+	server.Get(func(r *nethttp.Request, rb *http.ResponseBuilder) error {
+		contentType, ok := contentTypeForPath(r.URL.Path)
+		if !ok {
+			return &http.HTTPError{Status: http.BadRequest}
+		}
+
+		data, err := readFile(r.URL.Path)
+		if err != nil {
+			return &http.HTTPError{Status: statusFromFileError(err)}
+		}
+
+		rb.Bytes(data).Header("Content-Type", contentType)
+		return nil
+	})
+
+	server.Post(func(r *nethttp.Request, rb *http.ResponseBuilder) error {
+		defer r.Body.Close()
+
+		err := writeFile(r.URL.Path, r.Body);
+		if err != nil {
+			return &http.HTTPError{Status: statusFromFileError(err)}
+		}
+
+		rb.Status(http.Created)
+		return nil
+	})
 
 	server.Listen(address, *maxConnections)
+}
+
+func statusFromFileError(err error) http.StatusCode {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return http.NotFound
+	case errors.Is(err, os.ErrPermission),
+		errors.Is(err, os.ErrInvalid),
+		errors.Is(err, errUnsupportedContentType):
+		return http.BadRequest
+	default:
+		return http.InternalServerError
+	}
 }
