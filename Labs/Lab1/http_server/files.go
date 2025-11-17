@@ -109,9 +109,6 @@ func FileGetHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
 // FilePostHandler hanterar filuppladdningar.
 // eller en raw POST där URL-path innehåller målfilens namn. Endast tillåtna filändelser sparas (enl. labbinstruktion)
 func FilePostHandler(r *builtInHttp.Request, rb *http.ResponseBuilder) error {
-	// Maxstorlek för enkelhets skull (10 MB)
-	const maxUploadSize = 10 << 20
-
 	// contentType := r.Header.Get("Content-Type")
 	var filename string
 	var reader io.Reader
