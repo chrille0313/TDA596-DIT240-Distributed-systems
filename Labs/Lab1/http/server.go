@@ -29,17 +29,25 @@ func (server *Server) handleError(err error) *Response {
 		status = httpErr.Status
 	}
 
-	return &Response{
+	response := &Response{
 		Protocol:   "HTTP/1.1",
 		StatusCode: status,
 		Headers:    make(Headers),
 	}
+
+	response.Headers["Connection"] = []string{"close"}
+
+	return response
 }
 
 func (server *Server) handleRequest(request *http.Request) (*Response, error) {
 	responseBuilder := NewResponseBuilder(request)
 
 	method := HTTPMethod(request.Method)
+	if !method.IsValid() {
+		return nil, &HTTPError{Status: BadRequest}
+	}
+
 	handler, exists := server.requestHandlers[method]
 	if !exists {
 		return nil, &HTTPError{Status: NotImplemented}
@@ -64,7 +72,6 @@ func (server *Server) handleConnection(connection net.Conn) {
 	reader := bufio.NewReader(connection)
 	request, err := http.ReadRequest(reader)
 
-	// FIXME: might be wrong?
 	if err != nil {
 		err = &HTTPError{Status: BadRequest}
 	} else {

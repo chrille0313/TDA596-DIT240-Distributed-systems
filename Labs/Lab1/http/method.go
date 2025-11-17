@@ -13,3 +13,12 @@ const (
 	Patch   = "PATCH"
 	Connect = "CONNECT"
 )
+
+func (method HTTPMethod) IsValid() bool {
+	switch method {
+	case Get, Head, Options, Trace, Put, Delete, Post, Patch, Connect:
+		return true
+	default:
+		return false
+	}
+}
