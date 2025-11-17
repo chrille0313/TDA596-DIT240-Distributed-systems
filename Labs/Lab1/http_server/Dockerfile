@@ -23,6 +23,5 @@ WORKDIR /app
 COPY --from=builder /app/http_server .
 
 EXPOSE 80
-EXPOSE 8080
 
 CMD ["./http_server"]
