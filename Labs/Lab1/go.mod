@@ -1,3 +1,3 @@
-module http_server
+module Lab1
 
 go 1.24.0

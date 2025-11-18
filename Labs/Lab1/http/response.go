@@ -10,7 +10,7 @@ type Response struct {
 	Protocol   string
 	StatusCode StatusCode
 	Headers    Headers
-	Body       string
+	Body       []byte
 }
 
 func NewResponse(request *http.Request) *Response {
@@ -23,7 +23,7 @@ func NewResponse(request *http.Request) *Response {
 		Protocol:   protocol,
 		StatusCode: Ok,
 		Headers:    make(Headers),
-		Body:       "",
+		Body:       nil,
 	}
 }
 
@@ -46,18 +46,15 @@ func (response *Response) hasBody() bool {
 	return ok
 }
 
-func (response *Response) String() string {
-	s := response.formatStartLine()
-	s += response.formatHeaders()
-	s += "\r\n"
+func (response *Response) Bytes() []byte {
+	startLine := response.formatStartLine()
+	headers := response.formatHeaders()
+	s := startLine + headers + "\r\n"
+	b := []byte(s)
 
-	if response.hasBody() {	
-		s += response.Body
+	if response.hasBody() {
+		b = append(b, []byte(response.Body)...)
 	}
 
-	return s
-}
-
-func (response *Response) Bytes() []byte {
-	return []byte(response.String())
+	return b
 }
