@@ -12,36 +12,66 @@ import (
 
 type ID int
 
-type MapFile struct {
-	path  string
-	inUse bool
+type TaskState int
+
+const (
+	TaskStateNone TaskState = iota
+	TaskStateUnassigned
+	TaskStateRunning
+	TaskStateDone
+)
+
+type MapTask struct {
+	id         ID
+	filePath   string
+	state      TaskState
+	assignedAt time.Time
+}
+
+func (t *MapTask) isTimedOut() bool {
+	return t.state == TaskStateRunning && time.Now().After(t.assignedAt.Add(10*time.Second))
 }
 
 type Coordinator struct {
-	nReduce      int
-	files        []*MapFile
-	mu           sync.Mutex
-	timeoutEvent chan ID
-	taskTimeouts TimeoutList
+	nReduce int
+	mu      sync.Mutex
+
+	mapTasks map[ID]*MapTask
+	// reduceTasks  [ID]Task
 }
 
 func (c *Coordinator) GetTask(args *NoArgs, reply *TaskReply) error {
 	reply.File = ""
 	c.mu.Lock()
-	for i, file := range c.files {
-		if !file.inUse {
-			reply.Id = i
-			reply.Type = TaskMap
-			reply.File = file.path
-			reply.Buckets = c.nReduce
-			file.inUse = true
 
-			// Start a timeout event for this task
+	mapTasksDone := true
+	for i, task := range c.mapTasks {
+		if task.state == TaskStateUnassigned || task.isTimedOut() {
+			taskID := ID(i)
+
+			reply.Id = taskID
+			reply.Type = TaskMap
+			reply.File = task.filePath
+			reply.Buckets = c.nReduce
+
+			task.state = TaskStateRunning
+			task.assignedAt = time.Now()
+			mapTasksDone = false
 			break
 		}
 	}
 	c.mu.Unlock()
+
+	if mapTasksDone {
+		// All map tasks are done, assign reduce tasks here
+	}
+
 	return nil
+}
+
+func (c *Coordinator) SignalDone() {
+
+	c.mapTasks[0].state = TaskStateDone
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -68,32 +98,20 @@ func (c *Coordinator) Done() bool {
 	return ret
 }
 
-func (c *Coordinator) handleTimeouts() {
-	for {
-		currentTime := time.Now()
-		expired := c.taskTimeouts.PopExpired(currentTime)
-
-		for _, taskID := range expired {
-			
-		}
-	}
-}
-
-
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		files:   make([]*MapFile, len(files)),
-		nReduce: nReduce,
+		mapTasks: make(map[ID]*MapTask, len(files)),
+		nReduce:  nReduce,
 	}
 
 	for i, filePath := range files {
-		c.files[i] = &MapFile{path: filePath}
+		taskID := ID(i)
+		c.mapTasks[taskID] = &MapTask{id: taskID, filePath: filePath, state: TaskStateUnassigned}
 	}
 
 	c.server()
-	go c.handleTimeouts()
 	return &c
 }
