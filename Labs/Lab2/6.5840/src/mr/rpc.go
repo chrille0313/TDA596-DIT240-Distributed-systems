@@ -23,6 +23,7 @@ const (
 )
 
 type TaskReply struct {
+	Id      int
 	Type    TaskType
 	File    string
 	Buckets int

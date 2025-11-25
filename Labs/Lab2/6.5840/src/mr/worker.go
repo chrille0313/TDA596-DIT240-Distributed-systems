@@ -7,12 +7,18 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"strconv"
 )
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
 	Key   string
 	Value string
+}
+
+type KeyGroup struct {
+	Key    string
+	Values []string
 }
 
 // use ihash(key) % NReduce to choose the reduce
@@ -28,8 +34,10 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 	task := askForTask()
 
 	if task.Type == TaskMap {
+		fmt.Println("Worker received file:", task.File)
 		mappedContents := mapContents(task.File, mapf)
-		outputMappedContents(mappedContents, task.Buckets)
+		groupContents := groupMappedContents(mappedContents)
+		outputMappedContents(task, groupContents)
 	}
 }
 
@@ -60,18 +68,41 @@ func mapContents(filePath string, mapf func(string, string) []KeyValue) []KeyVal
 	return mapf(filePath, string(content))
 }
 
-func outputMappedContents(mappedContents []KeyValue, buckets int) {
-	for _, item := range mappedContents {
-		hash := ihash(item.Key)
-		bucket := hash % buckets
-		
+func groupMappedContents(mappedContents []KeyValue) []KeyGroup {
+	grouped := make(map[string][]string)
+	for _, kv := range mappedContents {
+		grouped[kv.Key] = append(grouped[kv.Key], kv.Value)
 	}
 
-	fmt.Println(mappedContents)
+	result := make([]KeyGroup, 0, len(grouped))
+	for key, values := range grouped {
+		result = append(result, KeyGroup{Key: key, Values: values})
+	}
+
+	return result
 }
 
-func getOutputFileName(bucket int) string {
-	return "mr-out-" + strconv.Itoa(bucket)
+func outputMappedContents(task TaskReply, mappedContents []KeyGroup) {
+	for _, item := range mappedContents {
+		hash := ihash(item.Key)
+		bucket := hash % task.Buckets
+		outputFileName := getOutputFileName(task, bucket)
+
+		f, err := os.OpenFile(outputFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			log.Fatalf("cannot open %v", outputFileName)
+		}
+		defer f.Close()
+
+		_, err = fmt.Fprintf(f, "%v %v\n", item.Key, item.Values)
+		if err != nil {
+			log.Fatalf("cannot write to %v", outputFileName)
+		}
+	}
+}
+
+func getOutputFileName(task TaskReply, bucket int) string {
+	return "mr-out-" + strconv.Itoa(task.Id) + "-" + strconv.Itoa(bucket)
 }
 
 // send an RPC request to the coordinator, wait for the response.

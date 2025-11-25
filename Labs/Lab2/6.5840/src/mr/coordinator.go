@@ -7,7 +7,10 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
+
+type ID int
 
 type MapFile struct {
 	path  string
@@ -15,20 +18,25 @@ type MapFile struct {
 }
 
 type Coordinator struct {
-	nReduce int
-	files   []MapFile
-	mu      sync.Mutex
+	nReduce      int
+	files        []*MapFile
+	mu           sync.Mutex
+	timeoutEvent chan ID
+	taskTimeouts TimeoutList
 }
 
 func (c *Coordinator) GetTask(args *NoArgs, reply *TaskReply) error {
 	reply.File = ""
 	c.mu.Lock()
-	for _, file := range c.files {
+	for i, file := range c.files {
 		if !file.inUse {
+			reply.Id = i
 			reply.Type = TaskMap
 			reply.File = file.path
 			reply.Buckets = c.nReduce
 			file.inUse = true
+
+			// Start a timeout event for this task
 			break
 		}
 	}
@@ -60,19 +68,32 @@ func (c *Coordinator) Done() bool {
 	return ret
 }
 
+func (c *Coordinator) handleTimeouts() {
+	for {
+		currentTime := time.Now()
+		expired := c.taskTimeouts.PopExpired(currentTime)
+
+		for _, taskID := range expired {
+			
+		}
+	}
+}
+
+
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		files:   make([]MapFile, len(files)),
+		files:   make([]*MapFile, len(files)),
 		nReduce: nReduce,
 	}
 
 	for i, filePath := range files {
-		c.files[i] = MapFile{path: filePath}
+		c.files[i] = &MapFile{path: filePath}
 	}
 
 	c.server()
+	go c.handleTimeouts()
 	return &c
 }
