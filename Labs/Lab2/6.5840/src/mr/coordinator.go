@@ -10,68 +10,44 @@ import (
 	"time"
 )
 
-type ID int
-
-type TaskState int
-
-const (
-	TaskStateNone TaskState = iota
-	TaskStateUnassigned
-	TaskStateRunning
-	TaskStateDone
-)
-
-type MapTask struct {
-	id         ID
-	filePath   string
-	state      TaskState
-	assignedAt time.Time
-}
-
-func (t *MapTask) isTimedOut() bool {
-	return t.state == TaskStateRunning && time.Now().After(t.assignedAt.Add(10*time.Second))
-}
-
 type Coordinator struct {
 	nReduce int
 	mu      sync.Mutex
 
-	mapTasks map[ID]*MapTask
-	// reduceTasks  [ID]Task
+	mapTasks map[TaskID]*MapTask
+	// reduceTasks map[ID]*Task
 }
 
-func (c *Coordinator) GetTask(args *NoArgs, reply *TaskReply) error {
-	reply.File = ""
+func (c *Coordinator) RequestTask(args *NoArgs, reply *TaskReply) error {
+	*reply = TaskReply{}
+	now := time.Now()
+
 	c.mu.Lock()
-
-	mapTasksDone := true
-	for i, task := range c.mapTasks {
-		if task.state == TaskStateUnassigned || task.isTimedOut() {
-			taskID := ID(i)
-
-			reply.Id = taskID
-			reply.Type = TaskMap
-			reply.File = task.filePath
-			reply.Buckets = c.nReduce
-
-			task.state = TaskStateRunning
-			task.assignedAt = time.Now()
-			mapTasksDone = false
-			break
-		}
-	}
+	mapTask := c.pickMapTaskLocked(now)
 	c.mu.Unlock()
 
-	if mapTasksDone {
-		// All map tasks are done, assign reduce tasks here
+	if mapTask != nil {
+		reply.Task = mapTask.Task
+		reply.MapData = &MapTaskData{File: mapTask.File, Buckets: mapTask.Buckets}
+	} else {
+		reply.Task = &Task{Type: TaskWait, State: TaskStateUnassigned, AssignedAt: now}
 	}
 
 	return nil
 }
 
-func (c *Coordinator) SignalDone() {
+func (c *Coordinator) pickMapTaskLocked(now time.Time) *MapTask {
+	for _, mapTask := range c.mapTasks {
+		if c.shouldAssignTask(mapTask.Task) {
+			mapTask.Task.MarkRunning(now)
+			return mapTask
+		}
+	}
+	return nil
+}
 
-	c.mapTasks[0].state = TaskStateDone
+func (c *Coordinator) shouldAssignTask(task *Task) bool {
+	return task.State == TaskStateUnassigned || (task.State == TaskStateRunning && !task.IsTimedOut())
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -103,13 +79,13 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		mapTasks: make(map[ID]*MapTask, len(files)),
+		mapTasks: make(map[TaskID]*MapTask, len(files)),
 		nReduce:  nReduce,
 	}
 
 	for i, filePath := range files {
-		taskID := ID(i)
-		c.mapTasks[taskID] = &MapTask{id: taskID, filePath: filePath, state: TaskStateUnassigned}
+		taskID := TaskID(i)
+		c.mapTasks[taskID] = &MapTask{Task: &Task{ID: taskID, Type: TaskMap, State: TaskStateUnassigned}, File: filePath, Buckets: nReduce}
 	}
 
 	c.server()

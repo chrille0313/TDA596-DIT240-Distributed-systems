@@ -13,20 +13,19 @@ import (
 
 type NoArgs struct{}
 
-type TaskType int
-
-const (
-	TaskNone TaskType = iota
-	TaskMap
-	TaskReduce
-	TaskWait
-)
-
 type TaskReply struct {
-	Id      ID
-	Type    TaskType
+	Task       *Task
+	MapData    *MapTaskData
+	ReduceData *ReduceTaskData
+}
+
+type MapTaskData struct {
 	File    string
 	Buckets int
+}
+
+type ReduceTaskData struct {
+	// TODO:
 }
 
 // Cook up a unique-ish UNIX-domain socket name

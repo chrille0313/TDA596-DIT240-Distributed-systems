@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"strconv"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -31,41 +32,98 @@ func ihash(key string) int {
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-	task := askForTask()
+	for {
+		reply := askForTask()
 
-	if task.Type == TaskMap {
-		fmt.Println("Worker received file:", task.File)
-		mappedContents := mapContents(task.File, mapf)
-		groupContents := groupMappedContents(mappedContents)
-		outputMappedContents(task, groupContents)
-	}
-}
+		if reply == nil {
+			log.Printf("worker: no task received, exiting")
+			return
+		}
 
-func askForTask() TaskReply {
-	args := NoArgs{}
-	reply := TaskReply{}
-
-	for reply.Type == TaskNone || reply.Type == TaskWait {
-		ok := call("Coordinator.GetTask", &args, &reply)
-		if !ok {
-			fmt.Printf("call failed!\n")
+		err := executeTask(reply, mapf, reducef)
+		if err != nil {
+			log.Printf("worker: %v", err)
 		}
 	}
-
-	return reply
 }
 
-func mapContents(filePath string, mapf func(string, string) []KeyValue) []KeyValue {
+func askForTask() *TaskReply {
+	args := NoArgs{}
+	reply := &TaskReply{}
+
+	for {
+		ok := call("Coordinator.RequestTask", &args, &reply)
+		if !ok {
+			log.Printf("worker: task request failed")
+			return nil
+		}
+
+		if reply.Task == nil {
+			log.Printf("worker: received reply without task, retrying")
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		if reply.Task.Type == TaskWait {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		return reply
+	}
+}
+
+func executeTask(reply *TaskReply, mapf func(string, string) []KeyValue, reducef func(string, []string) string) error {
+	if reply.Task == nil {
+		return fmt.Errorf("worker: missing task in reply")
+	}
+
+	switch reply.Task.Type {
+	case TaskMap:
+		if reply.MapData == nil {
+			return fmt.Errorf("worker: map task %d missing data", reply.Task.ID)
+		}
+		return runMapTask(reply.Task, reply.MapData, mapf)
+	case TaskReduce:
+		if reply.ReduceData == nil {
+			return fmt.Errorf("worker: reduce task %d missing data", reply.Task.ID)
+		}
+		return runReduceTask(reply.Task, reply.ReduceData, reducef)
+	default:
+		return fmt.Errorf("worker: unsupported task type %v", reply.Task.Type)
+	}
+}
+
+func runMapTask(task *Task, data *MapTaskData, mapf func(string, string) []KeyValue) error {
+	log.Printf("worker: processing map task %d (%s)", task.ID, data.File)
+
+	mappedContents, err := mapContents(data.File, mapf)
+	if err != nil {
+		return err
+	}
+
+	groupedContents := groupMappedContents(mappedContents)
+	return outputMappedContents(task.ID, data.Buckets, groupedContents)
+}
+
+func mapContents(filePath string, mapf func(string, string) []KeyValue) ([]KeyValue, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		log.Fatalf("cannot open %v", filePath)
+		return nil, fmt.Errorf("worker: cannot open %s: %w", filePath, err)
 	}
+
 	content, err := io.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v", filePath)
+		file.Close()
+		return nil, fmt.Errorf("worker: cannot read %s: %w", filePath, err)
 	}
-	file.Close()
-	return mapf(filePath, string(content))
+
+	err = file.Close()
+	if err != nil {
+		return nil, fmt.Errorf("worker: cannot close %s: %w", filePath, err)
+	}
+
+	return mapf(filePath, string(content)), nil
 }
 
 func groupMappedContents(mappedContents []KeyValue) []KeyGroup {
@@ -82,27 +140,40 @@ func groupMappedContents(mappedContents []KeyValue) []KeyGroup {
 	return result
 }
 
-func outputMappedContents(task TaskReply, mappedContents []KeyGroup) {
+func outputMappedContents(taskID TaskID, buckets int, mappedContents []KeyGroup) error {
 	for _, item := range mappedContents {
 		hash := ihash(item.Key)
-		bucket := hash % task.Buckets
-		outputFileName := getOutputFileName(task, bucket)
+		bucket := hash % buckets
+		outputFileName := getOutputFileName(taskID, bucket)
 
 		f, err := os.OpenFile(outputFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
-			log.Fatalf("cannot open %v", outputFileName)
+			return fmt.Errorf("worker: cannot open %s: %w", outputFileName, err)
 		}
-		defer f.Close()
 
 		_, err = fmt.Fprintf(f, "%v %v\n", item.Key, item.Values)
 		if err != nil {
-			log.Fatalf("cannot write to %v", outputFileName)
+			f.Close()
+			return fmt.Errorf("worker: cannot write to %s: %w", outputFileName, err)
+		}
+
+		err = f.Close()
+		if err != nil {
+			return fmt.Errorf("worker: cannot close %s: %w", outputFileName, err)
 		}
 	}
+	return nil
 }
 
-func getOutputFileName(task TaskReply, bucket int) string {
-	return "mr-out-" + strconv.Itoa(task.Id) + "-" + strconv.Itoa(bucket)
+func getOutputFileName(taskID TaskID, bucket int) string {
+	return "mr-out-" + strconv.Itoa(int(taskID)) + "-" + strconv.Itoa(bucket)
+}
+
+func runReduceTask(task *Task, data *ReduceTaskData, reducef func(string, []string) string) error {
+	// TODO: implement
+	_, _, _ = task, data, reducef
+	log.Fatal("worker: not implemented")
+	return nil
 }
 
 // send an RPC request to the coordinator, wait for the response.
