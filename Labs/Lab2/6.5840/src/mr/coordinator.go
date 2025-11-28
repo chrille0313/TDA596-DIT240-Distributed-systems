@@ -50,11 +50,9 @@ func MakeCoordinator(files []string, nReduceTasks int) *Coordinator {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-	return ret
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.allMapTasksDoneLocked() && c.allReduceTasksDoneLocked()
 }
 
 func (c *Coordinator) RequestTask(args *NoArgs, reply *TaskReply) error {
