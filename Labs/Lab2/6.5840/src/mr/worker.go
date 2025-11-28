@@ -160,7 +160,7 @@ func writeBucketToFile(taskID TaskID, bucket int, keyValues []KeyValue) error {
 
 	encoder := json.NewEncoder(tmp)
 	for _, kv := range keyValues {
-		err := encoder.Encode(kv)
+		err := encoder.Encode(&kv)
 		if err != nil {
 			tmp.Close()
 			return fmt.Errorf("worker: cannot write %s: %w", filename, err)
