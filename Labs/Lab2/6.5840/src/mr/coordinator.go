@@ -57,31 +57,34 @@ func (c *Coordinator) Done() bool {
 
 func (c *Coordinator) RequestTask(args *NoArgs, reply *TaskReply) error {
 	*reply = TaskReply{}
-	now := time.Now()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	mapTask := c.pickMapTaskLocked(now);
+	mapTask := c.pickMapTaskLocked();
 	if mapTask != nil {
 		reply.Task = mapTask.Task
+		reply.Task.MarkRunning(time.Now())
 		reply.MapData = &MapTaskData{File: mapTask.File, Buckets: mapTask.Buckets}
 		return nil
 	}
 
 	if !c.allMapTasksDoneLocked() {
-		reply.Task = &Task{Type: TaskWait, State: TaskStateUnassigned, AssignedAt: now}
+		reply.Task = &Task{Type: TaskWait}
+		reply.Task.MarkRunning(time.Now())
 		return nil
 	}
 
-	reduceTask := c.pickReduceTaskLocked(now);
+	reduceTask := c.pickReduceTaskLocked();
 	if reduceTask != nil {
 		reply.Task = reduceTask.Task
+		reply.Task.MarkRunning(time.Now())
 		reply.ReduceData = &ReduceTaskData{Bucket: reduceTask.Bucket, MapTasks: reduceTask.MapTasks}
 		return nil
 	}
 
-	reply.Task = &Task{Type: TaskWait, State: TaskStateUnassigned, AssignedAt: now}
+	reply.Task = &Task{Type: TaskWait}
+	reply.Task.MarkRunning(time.Now())
 	return nil
 }
 
@@ -110,20 +113,18 @@ func (c *Coordinator) ReportTaskCompletion(args *Task, reply *NoArgs) error {
 	return nil
 }
 
-func (c *Coordinator) pickMapTaskLocked(now time.Time) *MapTask {
+func (c *Coordinator) pickMapTaskLocked() *MapTask {
 	for _, mapTask := range c.mapTasks {
 		if c.shouldAssignTask(mapTask.Task) {
-			mapTask.Task.MarkRunning(now)
 			return mapTask
 		}
 	}
 	return nil
 }
 
-func (c *Coordinator) pickReduceTaskLocked(now time.Time) *ReduceTask {
+func (c *Coordinator) pickReduceTaskLocked() *ReduceTask {
 	for _, reduceTask := range c.reduceTasks {
 		if c.shouldAssignTask(reduceTask.Task) {
-			reduceTask.Task.MarkRunning(now)
 			return reduceTask
 		}
 	}
