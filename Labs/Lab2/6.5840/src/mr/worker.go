@@ -1,28 +1,24 @@
 package mr
 
 import (
-	"bufio"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"log"
 	"net/rpc"
 	"os"
-	"sort"
-	"strconv"
-	"strings"
+	"path/filepath"
 	"time"
 )
 
+type Key = string
+type Value = string
+
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
-	Key   string
-	Value string
-}
-
-type KeyGroup struct {
-	Key    string
-	Values []string
+	Key   Key
+	Value Value
 }
 
 // use ihash(key) % NReduce to choose the reduce
@@ -34,7 +30,7 @@ func ihash(key string) int {
 }
 
 // main/mrworker.go calls this function.
-func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+func Worker(mapf func(string, string) []KeyValue, reducef func(Key, []Value) Value) {
 	for {
 		reply := askForTask()
 
@@ -76,7 +72,7 @@ func askForTask() *TaskReply {
 	}
 }
 
-func executeTask(reply *TaskReply, mapf func(string, string) []KeyValue, reducef func(string, []string) string) error {
+func executeTask(reply *TaskReply, mapf func(string, string) []KeyValue, reducef func(Key, []Value) Value) error {
 	if reply.Task == nil {
 		return fmt.Errorf("worker: missing task in reply")
 	}
@@ -85,16 +81,21 @@ func executeTask(reply *TaskReply, mapf func(string, string) []KeyValue, reducef
 	case TaskMap:
 		if reply.MapData == nil {
 			return fmt.Errorf("worker: map task %d missing data", reply.Task.ID)
+		} else if err := runMapTask(reply.Task, reply.MapData, mapf); err != nil {
+			return err
 		}
-		return runMapTask(reply.Task, reply.MapData, mapf)
 	case TaskReduce:
 		if reply.ReduceData == nil {
 			return fmt.Errorf("worker: reduce task %d missing data", reply.Task.ID)
+		} else if err := runReduceTask(reply.Task, reply.ReduceData, reducef); err != nil {
+			return err
 		}
-		return runReduceTask(reply.Task, reply.ReduceData, reducef)
 	default:
 		return fmt.Errorf("worker: unsupported task type %v", reply.Task.Type)
 	}
+
+	call("Coordinator.ReportTaskCompletion", reply.Task, &NoArgs{})
+	return nil
 }
 
 func runMapTask(task *Task, data *MapTaskData, mapf func(string, string) []KeyValue) error {
@@ -105,8 +106,8 @@ func runMapTask(task *Task, data *MapTaskData, mapf func(string, string) []KeyVa
 		return err
 	}
 
-	groupedContents := groupMappedContents(mappedContents)
-	return outputMappedContents(task.ID, data.Buckets, groupedContents)
+	buckets := bucketContents(mappedContents, data.Buckets)
+	return writeBucketsToFiles(task.ID, buckets)
 }
 
 func mapContents(filePath string, mapf func(string, string) []KeyValue) ([]KeyValue, error) {
@@ -129,120 +130,135 @@ func mapContents(filePath string, mapf func(string, string) []KeyValue) ([]KeyVa
 	return mapf(filePath, string(content)), nil
 }
 
-func groupMappedContents(mappedContents []KeyValue) []KeyGroup {
-	grouped := make(map[string][]string)
-	for _, kv := range mappedContents {
-		grouped[kv.Key] = append(grouped[kv.Key], kv.Value)
+func bucketContents(keyValues []KeyValue, nBuckets int) [][]KeyValue {
+	buckets := make([][]KeyValue, nBuckets)
+	for _, kv := range keyValues {
+		bucket := ihash(kv.Key) % nBuckets
+		buckets[bucket] = append(buckets[bucket], kv)
 	}
-
-	result := make([]KeyGroup, 0, len(grouped))
-	for key, values := range grouped {
-		result = append(result, KeyGroup{Key: key, Values: values})
-	}
-
-	return result
+	return buckets
 }
 
-func outputMappedContents(taskID TaskID, buckets int, mappedContents []KeyGroup) error {
-	for _, item := range mappedContents {
-		hash := ihash(item.Key)
-		bucket := hash % buckets
-		outputFileName := getOutputFileName(taskID, bucket)
-
-		f, err := os.OpenFile(outputFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+func writeBucketsToFiles(taskID TaskID, buckets [][]KeyValue) error {
+	for bucket, keyValues := range buckets {
+		err := writeBucketToFile(taskID, bucket, keyValues)
 		if err != nil {
-			return fmt.Errorf("worker: cannot open %s: %w", outputFileName, err)
-		}
-
-		_, err = fmt.Fprintf(f, "%v %v\n", item.Key, item.Values)
-		if err != nil {
-			f.Close()
-			return fmt.Errorf("worker: cannot write to %s: %w", outputFileName, err)
-		}
-
-		err = f.Close()
-		if err != nil {
-			return fmt.Errorf("worker: cannot close %s: %w", outputFileName, err)
+			return err
 		}
 	}
 	return nil
 }
 
-func getOutputFileName(taskID TaskID, bucket int) string {
-	return "mr-out-" + strconv.Itoa(int(taskID)) + "-" + strconv.Itoa(bucket)
+func writeBucketToFile(taskID TaskID, bucket int, keyValues []KeyValue) error {
+	filename := intermediateFileName(taskID, bucket)
+
+	tmp, err := os.CreateTemp(filepath.Dir(filename), "mr-bucket-*")
+	if err != nil {
+		return fmt.Errorf("worker: cannot create temp file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+
+	encoder := json.NewEncoder(tmp)
+	for _, kv := range keyValues {
+		err := encoder.Encode(kv)
+		if err != nil {
+			tmp.Close()
+			return fmt.Errorf("worker: cannot write %s: %w", filename, err)
+		}
+	}
+
+	err = tmp.Close()
+	if err != nil {
+		return fmt.Errorf("worker: cannot close temp file: %w", err)
+	}
+
+	err = os.Rename(tmp.Name(), filename)
+	if err != nil {
+		return fmt.Errorf("worker: cannot rename temp file to %s: %w", filename, err)
+	}
+
+	return nil
 }
 
-func runReduceTask(task *Task, data *ReduceTaskData, reducef func(string, []string) string) error {
+func runReduceTask(task *Task, data *ReduceTaskData, reducef func(Key, []Value) Value) error {
 	log.Printf("worker: processing reduce task %d (bucket %d)", task.ID, data.Bucket)
 
-    grouped := make(map[string][]string)
-    for _, mapTaskID := range data.MapTasks {
-        filename := getOutputFileName(mapTaskID, data.Bucket)
-        if err := loadIntermediateFile(filename, grouped); err != nil {
-            return err
-        }
-    }
+	mappedContents := make([]KeyValue, 0)
+	for _, mapTaskID := range data.MapTasks {
+		bucketContents, err := readBucketFile(mapTaskID, data.Bucket)
+		if err != nil {
+			return err
+		}
 
-    keys := make([]string, 0, len(grouped))
-    for k := range grouped {
-        keys = append(keys, k)
-    }
-    sort.Strings(keys)
+		mappedContents = append(mappedContents, bucketContents...)
+	}
 
-    outputName := fmt.Sprintf("mr-out-%d", task.ID)
-    out, err := os.Create(outputName)
-    if err != nil {
-        return fmt.Errorf("worker: cannot create %s: %w", outputName, err)
-    }
-    defer out.Close()
-
-    for _, key := range keys {
-        value := reducef(key, grouped[key])
-        if _, err := fmt.Fprintf(out, "%v %v\n", key, value); err != nil {
-            return fmt.Errorf("worker: cannot write to %s: %w", outputName, err)
-        }
-    }
-
-    return nil
+	groupedContents := groupByKey(mappedContents)
+	reducedContents := reduceContents(groupedContents, reducef)
+	return writeReducedContentsToFile(data.Bucket, reducedContents)
 }
 
-func loadIntermediateFile(path string, grouped map[string][]string) error {
-    f, err := os.Open(path)
-    if err != nil {
-        return fmt.Errorf("worker: cannot open %s: %w", path, err)
-    }
-    defer f.Close()
+func readBucketFile(taskID TaskID, bucket int) ([]KeyValue, error) {
+	filename := intermediateFileName(taskID, bucket)
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, fmt.Errorf("worker: cannot open %s: %w", filename, err)
+	}
+	defer file.Close()
 
-    scanner := bufio.NewScanner(f)
-    for scanner.Scan() {
-        key, values, err := parseIntermediateLine(scanner.Text())
-        if err != nil {
-            return fmt.Errorf("worker: cannot parse %s: %w", path, err)
-        }
-        grouped[key] = append(grouped[key], values...)
-    }
-    if err := scanner.Err(); err != nil {
-        return fmt.Errorf("worker: cannot read %s: %w", path, err)
-    }
-    return nil
+	keyValues := make([]KeyValue, 0)
+	decoder := json.NewDecoder(file)
+	for {
+		var kv KeyValue
+		err := decoder.Decode(&kv)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("worker: cannot decode %s: %w", filename, err)
+		}
+		keyValues = append(keyValues, kv)
+	}
+	return keyValues, nil
 }
 
-func parseIntermediateLine(line string) (string, []string, error) {
-    parts := strings.SplitN(line, " ", 2)
-    if len(parts) != 2 {
-        return "", nil, fmt.Errorf("malformed intermediate line %q", line)
-    }
+func groupByKey(keyValues []KeyValue) map[Key][]Value {
+	grouped := make(map[Key][]Value)
+	for _, kv := range keyValues {
+		grouped[kv.Key] = append(grouped[kv.Key], kv.Value)
+	}
+	return grouped
+}
 
-    raw := strings.TrimSpace(parts[1])
-    raw = strings.TrimPrefix(raw, "[")
-    raw = strings.TrimSuffix(raw, "]")
+func reduceContents(groupedContents map[Key][]Value, reducef func(Key, []Value) Value) []KeyValue {
+	reducedContents := make([]KeyValue, 0, len(groupedContents))
+	for key, values := range groupedContents {
+		reducedContents = append(reducedContents, KeyValue{Key: key, Value: reducef(key, values)})
+	}
+	return reducedContents
+}
 
-    var values []string
-    if raw != "" {
-        values = strings.Fields(raw)
-    }
+func writeReducedContentsToFile(bucket int, reducedContents []KeyValue) error {
+	filename := reduceOutputFileName(bucket)
+	file, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("worker: cannot create %s: %w", filename, err)
+	}
+	defer file.Close()
 
-    return parts[0], values, nil
+	for _, kv := range reducedContents {
+		fmt.Fprintf(file, "%v %v\n", kv.Key, kv.Value)
+	}
+
+	return nil
+}
+
+func intermediateFileName(mapID TaskID, bucket int) string {
+	return fmt.Sprintf("mr-%d-%d", mapID, bucket)
+}
+
+func reduceOutputFileName(bucket int) string {
+	return fmt.Sprintf("mr-out-%d", bucket)
 }
 
 // send an RPC request to the coordinator, wait for the response.
