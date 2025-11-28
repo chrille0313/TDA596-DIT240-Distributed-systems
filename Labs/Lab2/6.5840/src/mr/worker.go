@@ -53,17 +53,12 @@ func askForTask() *TaskReply {
 	for {
 		ok := call("Coordinator.RequestTask", &args, &reply)
 		if !ok {
-			log.Printf("worker: task request failed")
+			log.Printf("worker: coordinator unreachable, assuming job is done and exiting")
 			return nil
 		}
 
 		if reply.Task == nil {
 			log.Printf("worker: received reply without task, retrying")
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-
-		if reply.Task.Type == TaskWait {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
@@ -90,6 +85,9 @@ func executeTask(reply *TaskReply, mapf func(string, string) []KeyValue, reducef
 		} else if err := runReduceTask(reply.Task, reply.ReduceData, reducef); err != nil {
 			return err
 		}
+	case TaskWait:
+		time.Sleep(200 * time.Millisecond)
+		return nil
 	default:
 		return fmt.Errorf("worker: unsupported task type %v", reply.Task.Type)
 	}
