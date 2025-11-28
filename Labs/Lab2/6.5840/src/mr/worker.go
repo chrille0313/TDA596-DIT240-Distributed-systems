@@ -1,13 +1,16 @@
 package mr
 
 import (
+	"bufio"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -170,10 +173,76 @@ func getOutputFileName(taskID TaskID, bucket int) string {
 }
 
 func runReduceTask(task *Task, data *ReduceTaskData, reducef func(string, []string) string) error {
-	// TODO: implement
-	_, _, _ = task, data, reducef
-	log.Fatal("worker: not implemented")
-	return nil
+	log.Printf("worker: processing reduce task %d (bucket %d)", task.ID, data.Bucket)
+
+    grouped := make(map[string][]string)
+    for _, mapTaskID := range data.MapTasks {
+        filename := getOutputFileName(mapTaskID, data.Bucket)
+        if err := loadIntermediateFile(filename, grouped); err != nil {
+            return err
+        }
+    }
+
+    keys := make([]string, 0, len(grouped))
+    for k := range grouped {
+        keys = append(keys, k)
+    }
+    sort.Strings(keys)
+
+    outputName := fmt.Sprintf("mr-out-%d", task.ID)
+    out, err := os.Create(outputName)
+    if err != nil {
+        return fmt.Errorf("worker: cannot create %s: %w", outputName, err)
+    }
+    defer out.Close()
+
+    for _, key := range keys {
+        value := reducef(key, grouped[key])
+        if _, err := fmt.Fprintf(out, "%v %v\n", key, value); err != nil {
+            return fmt.Errorf("worker: cannot write to %s: %w", outputName, err)
+        }
+    }
+
+    return nil
+}
+
+func loadIntermediateFile(path string, grouped map[string][]string) error {
+    f, err := os.Open(path)
+    if err != nil {
+        return fmt.Errorf("worker: cannot open %s: %w", path, err)
+    }
+    defer f.Close()
+
+    scanner := bufio.NewScanner(f)
+    for scanner.Scan() {
+        key, values, err := parseIntermediateLine(scanner.Text())
+        if err != nil {
+            return fmt.Errorf("worker: cannot parse %s: %w", path, err)
+        }
+        grouped[key] = append(grouped[key], values...)
+    }
+    if err := scanner.Err(); err != nil {
+        return fmt.Errorf("worker: cannot read %s: %w", path, err)
+    }
+    return nil
+}
+
+func parseIntermediateLine(line string) (string, []string, error) {
+    parts := strings.SplitN(line, " ", 2)
+    if len(parts) != 2 {
+        return "", nil, fmt.Errorf("malformed intermediate line %q", line)
+    }
+
+    raw := strings.TrimSpace(parts[1])
+    raw = strings.TrimPrefix(raw, "[")
+    raw = strings.TrimSuffix(raw, "]")
+
+    var values []string
+    if raw != "" {
+        values = strings.Fields(raw)
+    }
+
+    return parts[0], values, nil
 }
 
 // send an RPC request to the coordinator, wait for the response.

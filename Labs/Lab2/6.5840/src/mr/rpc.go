@@ -25,7 +25,8 @@ type MapTaskData struct {
 }
 
 type ReduceTaskData struct {
-	// TODO:
+	Bucket   int      
+    MapTasks []TaskID
 }
 
 // Cook up a unique-ish UNIX-domain socket name
