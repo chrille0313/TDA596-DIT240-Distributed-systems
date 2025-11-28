@@ -45,3 +45,9 @@ type MapTask struct {
 	File    string
 	Buckets int
 }
+
+type ReduceTask struct {
+	Task     *Task
+	Bucket   int
+	MapTasks []TaskID
+}
