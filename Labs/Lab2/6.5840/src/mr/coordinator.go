@@ -22,26 +22,28 @@ func (c *Coordinator) RequestTask(args *NoArgs, reply *TaskReply) error {
 	now := time.Now()
 
 	c.mu.Lock()
-	mapTask := c.pickMapTaskLocked(now)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
 
+	mapTask := c.pickMapTaskLocked(now);
 	if mapTask != nil {
 		reply.Task = mapTask.Task
 		reply.MapData = &MapTaskData{File: mapTask.File, Buckets: mapTask.Buckets}
-	} else {
-		c.mu.Lock()
-		reduceTask := c.pickReduceTaskLocked(now)
-		c.mu.Unlock()
-
-		if reduceTask != nil {
-			reply.Task = reduceTask.Task
-			reply.ReduceData = &ReduceTaskData{Bucket: reduceTask.Bucket, MapTasks: reduceTask.MapTasks}
-			return nil
-		} else {
-			reply.Task = &Task{Type: TaskWait, State: TaskStateUnassigned, AssignedAt: now}
-		}
+		return nil
 	}
 
+	if !c.allMapTasksDoneLocked() {
+		reply.Task = &Task{Type: TaskWait, State: TaskStateUnassigned, AssignedAt: now}
+		return nil
+	}
+
+	reduceTask := c.pickReduceTaskLocked(now);
+	if reduceTask != nil {
+		reply.Task = reduceTask.Task
+		reply.ReduceData = &ReduceTaskData{Bucket: reduceTask.Bucket, MapTasks: reduceTask.MapTasks}
+		return nil
+	}
+
+	reply.Task = &Task{Type: TaskWait, State: TaskStateUnassigned, AssignedAt: now}
 	return nil
 }
 
@@ -66,7 +68,7 @@ func (c *Coordinator) pickReduceTaskLocked(now time.Time) *ReduceTask {
 }
 
 func (c *Coordinator) shouldAssignTask(task *Task) bool {
-	return task.State == TaskStateUnassigned || (task.State == TaskStateRunning && !task.IsTimedOut())
+	return task.State == TaskStateUnassigned || (task.State == TaskStateRunning && task.IsTimedOut())
 }
 
 func (c *Coordinator) ReportTaskCompletion(args *Task, reply *NoArgs) error {
@@ -78,7 +80,7 @@ func (c *Coordinator) ReportTaskCompletion(args *Task, reply *NoArgs) error {
 	switch args.Type {
 	case TaskMap:
 		mapTask, exists := c.mapTasks[args.ID]
-		if exists {
+		if exists && mapTask.Task.State != TaskStateDone {
 			mapTask.Task.State = TaskStateDone
 
 			for _, reduceTask := range c.reduceTasks {
@@ -137,9 +139,31 @@ func MakeCoordinator(files []string, nReduceTasks int) *Coordinator {
 
 	for i := 0; i < nReduceTasks; i++ {
 		taskID := TaskID(i)
-		c.reduceTasks[taskID] = &ReduceTask{Task: &Task{ID: taskID, Type: TaskReduce, State: TaskStateUnassigned}, Bucket: i, MapTasks: make([]TaskID, nMapTasks)}
+		c.reduceTasks[taskID] = &ReduceTask{
+			Task:     &Task{ID: taskID, Type: TaskReduce, State: TaskStateUnassigned},
+			Bucket:   i,
+			MapTasks: make([]TaskID, 0, nMapTasks),
+		}
 	}
 
 	c.server()
 	return &c
+}
+
+func (c *Coordinator) allMapTasksDoneLocked() bool {
+	for _, mapTask := range c.mapTasks {
+		if mapTask.Task.State != TaskStateDone {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Coordinator) allReduceTasksDoneLocked() bool {
+	for _, reduceTask := range c.reduceTasks {
+		if reduceTask.Task.State != TaskStateDone {
+			return false
+		}
+	}
+	return true
 }
