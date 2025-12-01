@@ -2,33 +2,51 @@ package mr
 
 import (
 	"log"
-	"net"
 	"net/http"
 	"net/rpc"
 	"os"
-	"strconv"
 )
 
-// start a thread that listens for RPCs from worker.go
-func (c *Coordinator) server() {
-	rpc.Register(c)
-	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
-	sockname := coordinatorSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
-	if e != nil {
-		log.Fatal("listen error:", e)
+// Start a coordinator server that listens for RPCs over HTTP.
+func (c *Coordinator) server() string {
+	if err := rpc.Register(c); err != nil {
+		log.Fatalf("coordinator: cannot register RPC server: %v", err)
 	}
-	go http.Serve(l, nil)
+
+	rpc.HandleHTTP()
+	address := getCoordinatorAddress()
+
+	go func() {
+		debugf("coordinator: listening on %s", address)
+		if err := http.ListenAndServe(address, nil); err != nil {
+			log.Fatalf("coordinator: cannot start server: %v", err)
+		}
+	}()
+
+	return address
 }
 
-// Cook up a unique-ish UNIX-domain socket name
-// in /var/tmp, for the coordinator.
-// Can't use the current directory since
-// Athena AFS doesn't support UNIX-domain sockets.
-func coordinatorSock() string {
-	s := "/var/tmp/5840-mr-"
-	s += strconv.Itoa(os.Getuid())
-	return s
+// Send an RPC request to the coordinator, wait for the response.
+// returns false if something goes wrong.
+func CallCoordinator(rpcname string, args interface{}, reply interface{}) bool {
+	address := getCoordinatorAddress()
+	client, err := rpc.DialHTTP("tcp", address)
+	if err != nil {
+		debugf("worker: failed to dial coordinator at %s: %v", address, err)
+		return false
+	}
+	defer client.Close()
+
+	if err := client.Call("Coordinator." + rpcname, args, reply); err != nil {
+		return false
+	}
+
+	return true
+}
+
+func getCoordinatorAddress() string {
+	if addr := os.Getenv("MR_COORDINATOR_ADDRESS"); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:7777"
 }

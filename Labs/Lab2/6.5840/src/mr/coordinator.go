@@ -1,20 +1,14 @@
 package mr
 
 import (
-	"log"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 )
 
-var globalID int = 0;
-
-func getGlobalID() int {
-	globalID++
-	return globalID
-}
-
 type Coordinator struct {
-	mu sync.Mutex
+	mu          sync.Mutex
 	mapTasks    map[TaskID]*MapTask
 	reduceTasks map[TaskID]*ReduceTask
 }
@@ -23,13 +17,13 @@ type Coordinator struct {
 // main/mrcoordinator.go calls this function.
 // nReduceTasks is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduceTasks int) *Coordinator {
-	c := Coordinator{
+	c := &Coordinator{
 		mapTasks:    make(map[TaskID]*MapTask, len(files)),
 		reduceTasks: make(map[TaskID]*ReduceTask, nReduceTasks),
 	}
 	nMapTasks := len(files)
 
-	log.Printf("coordinator: starting with %d map tasks and %d reduce tasks", nMapTasks, nReduceTasks)
+	debugf("coordinator: starting with %d map tasks and %d reduce tasks", nMapTasks, nReduceTasks)
 
 	for _, filePath := range files {
 		taskID := TaskID(getGlobalID())
@@ -39,14 +33,14 @@ func MakeCoordinator(files []string, nReduceTasks int) *Coordinator {
 	for bucket := 0; bucket < nReduceTasks; bucket++ {
 		taskID := TaskID(getGlobalID())
 		c.reduceTasks[taskID] = &ReduceTask{
-			Task:     &Task{ID: taskID, Type: TaskReduce, State: TaskStateUnassigned},
-			Bucket:   bucket,
-			MapTasks: make([]TaskID, 0, nMapTasks),
+			Task:           &Task{ID: taskID, Type: TaskReduce, State: TaskStateUnassigned},
+			Bucket:         bucket,
+			MapTaskOutputs: make(map[TaskID]string, nMapTasks),
 		}
 	}
 
 	c.server()
-	return &c
+	return c
 }
 
 // main/mrcoordinator.go calls Done() periodically to find out
@@ -63,11 +57,17 @@ func (c *Coordinator) RequestTask(args *NoArgs, reply *TaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	mapTask := c.pickMapTaskLocked();
+	mapTask := c.pickMapTaskLocked()
 	if mapTask != nil {
 		reply.Task = mapTask.Task
 		reply.Task.MarkRunning(time.Now())
-		reply.MapData = &MapTaskData{File: mapTask.File, Buckets: mapTask.Buckets}
+
+		fileContent, err := os.ReadFile(mapTask.File)
+		if err != nil {
+			return fmt.Errorf("coordinator: cannot read file %s: %w", mapTask.File, err)
+		}
+
+		reply.MapData = &MapTaskData{Key: mapTask.File, Content: string(fileContent), Buckets: mapTask.Buckets}
 		return nil
 	}
 
@@ -77,11 +77,14 @@ func (c *Coordinator) RequestTask(args *NoArgs, reply *TaskReply) error {
 		return nil
 	}
 
-	reduceTask := c.pickReduceTaskLocked();
+	reduceTask := c.pickReduceTaskLocked()
 	if reduceTask != nil {
 		reply.Task = reduceTask.Task
 		reply.Task.MarkRunning(time.Now())
-		reply.ReduceData = &ReduceTaskData{Bucket: reduceTask.Bucket, MapTasks: reduceTask.MapTasks}
+		reply.ReduceData = &ReduceTaskData{
+			Bucket:         reduceTask.Bucket,
+			MapTaskOutputs: reduceTask.MapTaskOutputs,
+		}
 		return nil
 	}
 
@@ -90,28 +93,51 @@ func (c *Coordinator) RequestTask(args *NoArgs, reply *TaskReply) error {
 	return nil
 }
 
-func (c *Coordinator) ReportTaskCompletion(args *Task, reply *NoArgs) error {
-	log.Printf("coordinator: received task completion report for task %d", args.ID)
+func (c *Coordinator) ReportTaskCompletion(args *ReportTaskCompletionArgs, reply *NoArgs) error {
+	task := args.Task
+	debugf("coordinator: received task completion report for task (id: %d)", task.ID)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	switch args.Type {
+	switch task.Type {
 	case TaskMap:
-		mapTask, exists := c.mapTasks[args.ID]
+		mapTask, exists := c.mapTasks[task.ID]
 		if exists && mapTask.Task.State != TaskStateDone {
 			mapTask.Task.State = TaskStateDone
 
 			for _, reduceTask := range c.reduceTasks {
-				reduceTask.MapTasks = append(reduceTask.MapTasks, mapTask.Task.ID)
+				reduceTask.MapTaskOutputs[mapTask.Task.ID] = args.WorkerAddress
 			}
 		}
 	case TaskReduce:
-		reduceTask, exists := c.reduceTasks[args.ID]
+		reduceTask, exists := c.reduceTasks[task.ID]
 		if exists {
 			reduceTask.Task.State = TaskStateDone
 		}
 	}
+
+	return nil
+}
+
+func (c *Coordinator) ReportMissingMapOutputs(args *ReportMissingMapOutputsArgs, reply *NoArgs) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	mapTask, exists := c.mapTasks[args.MapTaskID]
+	if !exists {
+		return nil
+	}
+
+	if mapTask.Task.State == TaskStateDone {
+		debugf("coordinator: map task %d outputs unavailable; rescheduling", mapTask.Task.ID)
+		mapTask.Task.State = TaskStateUnassigned
+		mapTask.Task.AssignedAt = time.Time{}
+		for _, reduceTask := range c.reduceTasks {
+			delete(reduceTask.MapTaskOutputs, mapTask.Task.ID)
+		}
+	}
+
 	return nil
 }
 

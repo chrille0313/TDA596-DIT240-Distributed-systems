@@ -47,7 +47,7 @@ type MapTask struct {
 }
 
 type ReduceTask struct {
-	Task     *Task
-	Bucket   int
-	MapTasks []TaskID
+	Task           *Task
+	Bucket         int
+	MapTaskOutputs map[TaskID]string // TaskID -> Adress of worker which produced the output
 }
