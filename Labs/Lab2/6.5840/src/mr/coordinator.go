@@ -10,9 +10,15 @@ import (
 	"time"
 )
 
+var globalID int = 0;
+
+func getGlobalID() int {
+	globalID++
+	return globalID
+}
+
 type Coordinator struct {
 	mu sync.Mutex
-
 	mapTasks    map[TaskID]*MapTask
 	reduceTasks map[TaskID]*ReduceTask
 }
@@ -29,16 +35,16 @@ func MakeCoordinator(files []string, nReduceTasks int) *Coordinator {
 
 	log.Printf("coordinator: starting with %d map tasks and %d reduce tasks", nMapTasks, nReduceTasks)
 
-	for i, filePath := range files {
-		taskID := TaskID(i)
+	for _, filePath := range files {
+		taskID := TaskID(getGlobalID())
 		c.mapTasks[taskID] = &MapTask{Task: &Task{ID: taskID, Type: TaskMap, State: TaskStateUnassigned}, File: filePath, Buckets: nReduceTasks}
 	}
 
-	for i := 0; i < nReduceTasks; i++ {
-		taskID := TaskID(i)
+	for bucket := 0; bucket < nReduceTasks; bucket++ {
+		taskID := TaskID(getGlobalID())
 		c.reduceTasks[taskID] = &ReduceTask{
 			Task:     &Task{ID: taskID, Type: TaskReduce, State: TaskStateUnassigned},
-			Bucket:   i,
+			Bucket:   bucket,
 			MapTasks: make([]TaskID, 0, nMapTasks),
 		}
 	}
