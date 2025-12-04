@@ -38,6 +38,7 @@ func CallCoordinator(rpcname string, args interface{}, reply interface{}) bool {
 	defer client.Close()
 
 	if err := client.Call("Coordinator." + rpcname, args, reply); err != nil {
+		debugf("worker: failed to call coordinator at %s: %v", address, err)
 		return false
 	}
 
