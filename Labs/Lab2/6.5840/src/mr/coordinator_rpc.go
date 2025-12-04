@@ -48,5 +48,5 @@ func getCoordinatorAddress() string {
 	if addr := os.Getenv("MR_COORDINATOR_ADDRESS"); addr != "" {
 		return addr
 	}
-	return "127.0.0.1:7777"
+	return "0.0.0.0:7777"
 }

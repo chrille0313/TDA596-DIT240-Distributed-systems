@@ -22,7 +22,7 @@ func server() string {
 		log.Fatalf("worker: cannot listen on %s: %v", listenAddr, err)
 	}
 
-	workerAddress = listener.Addr().String()
+	workerAddress = getWorkerPublicAddress()
 
 	if err := rpc.RegisterName("WorkerData", &WorkerDataService{}); err != nil {
 		log.Fatalf("worker: cannot register data service: %v", err)
@@ -31,7 +31,7 @@ func server() string {
 	rpc.HandleHTTP()
 
 	go func() {
-		debugf("worker: listening on %s", workerAddress)
+		debugf("worker: listening on %s", listener.Addr().String())
 		if err := http.Serve(listener, nil); err != nil {
 			log.Fatalf("worker: cannot start server: %v", err)
 		}
@@ -58,10 +58,18 @@ func CallWorker(address string, rpcname string, args interface{}, reply interfac
 }
 
 func getWorkerListenAddress() string {
-	if addr := os.Getenv("MR_WORKER_ADDRESS"); addr != "" {
+	if addr := os.Getenv("MR_WORKER_LISTEN_ADDRESS"); addr != "" {
 		return addr
 	}
 	return "127.0.0.1:"
+}
+
+func getWorkerPublicAddress() string {
+	if addr := os.Getenv("MR_WORKER_PUBLIC_ADDRESS"); addr != "" {
+		return addr
+	}
+
+	return getWorkerListenAddress()
 }
 
 /*

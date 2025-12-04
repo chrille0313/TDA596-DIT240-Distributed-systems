@@ -1,0 +1,17 @@
+FROM golang:1.21-alpine AS build
+
+WORKDIR /build
+COPY . .
+WORKDIR /build/src
+RUN go build -o /tmp/mrcoordinator ./main/mrcoordinator.go
+
+FROM alpine:3.19
+
+WORKDIR /data
+COPY --from=build /tmp/mrcoordinator /usr/local/bin/mrcoordinator
+COPY src/main/pg-*.txt /data/
+
+COPY docker/start-coordinator.sh /usr/local/bin/start-coordinator.sh
+RUN chmod +x /usr/local/bin/start-coordinator.sh
+
+ENTRYPOINT ["/usr/local/bin/start-coordinator.sh"]
