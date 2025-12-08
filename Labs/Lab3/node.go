@@ -73,10 +73,21 @@ type FindSuccessorReply struct {
 }
 
 func (node *Node) Successor(args *FindSuccessorArgs, reply *FindSuccessorReply) error {
-	// if (id ∈ (n, successor])
-	//         return true, successor;
-	//     else
-	//         return false, closest_preceding_node(id);
+	successor, exists := node.Successors[args.ID]
+
+	if exists {
+		reply.found = true
+		reply.Successor = successor
+	} else {
+		reply.found = false
+		successor, err := node.closestPrecedingNode(args.ID)
+		if err != nil {
+			return err
+		}
+		reply.Successor = successor
+	}
+
+	return nil
 }
 
 func (node *Node) findSuccessor(id *big.Int, address NodeAddress) (NodeAddress, error) {
@@ -101,21 +112,77 @@ func (node *Node) findSuccessor(id *big.Int, address NodeAddress) (NodeAddress, 
 	return "", nil
 }
 
-func (node *Node) checkPredecessor() error {
-	// TODO: Implement
-	return nil
-}
 
-func (node *Node) closestPrecedingNode() (NodeAddress, error) {
+
+func (node *Node) closestPrecedingNode(id *big.Int) (NodeAddress, error) {
 	// TODO: Implement
+	// skip this loop if you do not have finger tables implemented yet
+        // for i = m downto 1
+        //     if (finger[i] ∈ (n,id))
+        //         return finger[i];
+        // return successor;
 	return "", nil
 }
 
-func (node *Node) fixFingers() error {
-	return nil
+type GetPredecessorArgs struct{}
+
+type GetPredecessorReply struct {
+    Predecessor NodeAddress
+}
+
+func (node *Node) GetPredecessor(args *GetPredecessorArgs, reply *GetPredecessorReply) error {
+ 	if node.Predecessor != nil {
+        reply.Predecessor = *node.Predecessor
+    }
+    return nil
 }
 
 func (node *Node) stabilize() error {
+	var successor NodeAddress
+    for _, addr := range node.Successors {
+        successor = addr
+        break
+    }	
+
+	if successor == "" {
+        return nil
+    }
+
+	args := &GetPredecessorArgs{}
+    reply := &GetPredecessorReply{}
+    err := CallRPC(string(successor), "Node.GetPredecessor", args, reply)
+    if err != nil {
+        return err
+    }
+
+	x := reply.Predecessor // the sucessors predecessor
+
+
+	// if x != "" && isBetween(node.ID, hashString(string(x)), hashString(string(successor))) {
+    //     // Update successor to x
+	// 	node.Successors[big.NewInt(0)] = x
+    //     successor = x
+    // }
+
+
+
+	notifyArgs := &NotifyArgs{ID: node.ID, Address: node.Address}
+    notifyReply := &NotifyReply{}
+    return CallRPC(string(successor), "Node.Notify", notifyArgs, notifyReply)
+}
+
+type NotifyArgs struct {
+    ID      *big.Int
+    Address NodeAddress
+}
+
+type NotifyReply struct{}
+
+func (node *Node) checkPredecessor() error {
+	return nil
+}
+
+func (node *Node) fixFingers() error {
 	return nil
 }
 
