@@ -51,7 +51,7 @@ func (node *Node) Start() (NodeAddress, error) {
 
 func (node *Node) CreateRing() error {
 	node.Predecessor = nil
-	node.Successors[0] = node.Address
+	node.Successors[big.NewInt(0)] = node.Address
 	return nil
 }
 
@@ -157,15 +157,13 @@ func (node *Node) stabilize() error {
 
 	x := reply.Predecessor // the sucessors predecessor
 
+	// if (x ∈ (n,successor))
+	if x != "" && isBetween(node.ID, hashString(string(x)), hashString(string(successor))) {
+		node.Successors[big.NewInt(0)] = x
+        successor = x
+    }
 
-	// if x != "" && isBetween(node.ID, hashString(string(x)), hashString(string(successor))) {
-    //     // Update successor to x
-	// 	node.Successors[big.NewInt(0)] = x
-    //     successor = x
-    // }
-
-
-
+	// successor.notify(n);
 	notifyArgs := &NotifyArgs{ID: node.ID, Address: node.Address}
     notifyReply := &NotifyReply{}
     return CallRPC(string(successor), "Node.Notify", notifyArgs, notifyReply)
@@ -178,12 +176,40 @@ type NotifyArgs struct {
 
 type NotifyReply struct{}
 
-func (node *Node) checkPredecessor() error {
+//if (predecessor is nil or n ∈ (predecessor, n))
+//		predecessor = n
+func (node *Node) Notify(args *NotifyArgs, reply *NotifyReply) error {
+	if node.Predecessor == nil || isBetween(hashString(string(*node.Predecessor)), args.ID, node.ID) {
+		node.Predecessor = &args.Address
+	}
 	return nil
 }
 
 func (node *Node) fixFingers() error {
+	var nextNode int
+	nextNode += 1
+	if nextNode >= len(node.FingerTable) {
+		nextNode = 1
+	}
+	node.FingerTable[nextNode] = "" // TODO implement findSuccessor(node.ID + 2^(nextNode-1))		
+	
 	return nil
+}
+
+func (node *Node) checkPredecessor() error {
+    args := &GetPredecessorArgs{}
+    reply := &GetPredecessorReply{}
+    
+    // Attempt RPC to predecessor
+    err := CallRPC(string(*node.Predecessor), "Node.GetPredecessor", args, reply)
+    
+    // If RPC fails, predecessor has crashed 
+    if err != nil {
+        node.Predecessor = nil
+        return nil
+    }
+
+    return nil
 }
 
 func (node *Node) startMaintenence() {
