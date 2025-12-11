@@ -1,66 +1,77 @@
-package chord
+package main
 
 import (
 	"math/big"
 	"time"
 )
 
+const (
+	FingerTableSize = 161
+	MaxHops         = 32
+)
+
 type Key string
 
 type NodeAddress string
 
+type IdPair struct {
+	ID      *big.Int
+	Address NodeAddress
+}
+
 type Node struct {
 	ID          *big.Int
 	Address     NodeAddress
-	FingerTable []NodeAddress
-	Predecessor *NodeAddress
-	Successors  map[*big.Int]NodeAddress
+	FingerTable []IdPair
+	Predecessor *IdPair
+	Successor   IdPair // TODO: Change to list of successors
 
-	Bucket map[Key]string
-
+	nextFingerToFix          int
 	stabilizeInterval        time.Duration // --ts
 	fixFingersInterval       time.Duration // --tff
 	checkPredecessorInterval time.Duration // --tcp
 }
 
-func MakeNode(address NodeAddress, stabilizeInterval, fixFingersInterval, checkPredecessorInterval, successorCount int, identifier string) *Node {
+func MakeNode(address NodeAddress, stabilizeInterval, fixFingersInterval, checkPredecessorInterval, successorCount int, identifier *string) *Node {
+	if identifier != nil {
+		address = NodeAddress(*identifier)
+	}
+
 	return &Node{
-		ID:                       computeNodeID(address, identifier),
+		ID:                       computeNodeID(address),
 		Address:                  address,
-		Successors:               make(map[*big.Int]NodeAddress, successorCount),
+		FingerTable:              make([]IdPair, 0, FingerTableSize),
+		nextFingerToFix:          1,
 		stabilizeInterval:        time.Duration(stabilizeInterval) * time.Millisecond,
 		fixFingersInterval:       time.Duration(fixFingersInterval) * time.Millisecond,
 		checkPredecessorInterval: time.Duration(checkPredecessorInterval) * time.Millisecond,
 	}
 }
 
-func computeNodeID(address NodeAddress, identifier string) *big.Int {
-	if identifier != "" {
-		return hashString(identifier)
-	} else {
-		return hashString(string(address))
-	}
+func computeNodeID(address NodeAddress) *big.Int {
+	return hashString(string(address))
 }
 
-func (node *Node) Start() (NodeAddress, error) {
+func (node *Node) Start() {
 	// TODO: Implement
 	node.startMaintenence()
-
-	return "", nil
+	StartRPCServer(string(node.Address), node)
 }
 
 func (node *Node) CreateRing() error {
 	node.Predecessor = nil
-	node.Successors[big.NewInt(0)] = node.Address
+	node.Successor = IdPair{ID: node.ID, Address: node.Address}
 	return nil
 }
 
 func (node *Node) JoinRing(joinAdress NodeAddress) error {
 	node.Predecessor = nil
-	successor, err := node.findSuccessorRPC(joinAdress, node.ID)
+	successor, err := node.findSuccessorIteratively(node.ID, joinAdress)
 	if err != nil {
 		return err
 	}
+	node.Successor = IdPair{ID: computeNodeID(successor), Address: successor}
+	return nil
 }
 
 type FindSuccessorArgs struct {
@@ -72,31 +83,30 @@ type FindSuccessorReply struct {
 	Successor NodeAddress
 }
 
-func (node *Node) Successor(args *FindSuccessorArgs, reply *FindSuccessorReply) error {
-	successor, exists := node.Successors[args.ID]
-
-	if exists {
+func (node *Node) FindSuccessor(args *FindSuccessorArgs, reply *FindSuccessorReply) error {
+	if isBetween(node.ID, args.ID, node.Successor.ID, true) {
 		reply.found = true
-		reply.Successor = successor
-	} else {
-		reply.found = false
-		successor, err := node.closestPrecedingNode(args.ID)
-		if err != nil {
-			return err
-		}
-		reply.Successor = successor
+		reply.Successor = node.Successor.Address
+		return nil
 	}
+
+	reply.found = false
+	successor, err := node.closestPrecedingNode(args.ID)
+	if err != nil {
+		return err
+	}
+	reply.Successor = successor
 
 	return nil
 }
 
-func (node *Node) findSuccessor(id *big.Int, address NodeAddress) (NodeAddress, error) {
+func (node *Node) findSuccessorIteratively(id *big.Int, address NodeAddress) (NodeAddress, error) {
 	found, nextNode := false, address
 	i := 0
-	for !found { // TODO: max hops
+	for !found && i < MaxHops {
 		args := &FindSuccessorArgs{ID: id}
 		reply := &FindSuccessorReply{}
-		err := CallRPC(string(nextNode), "Node.Successor", args, reply)
+		err := CallNodeRPC(nextNode, "Node.FindSuccessor", args, reply)
 		if err != nil {
 			return "", err
 		}
@@ -109,107 +119,100 @@ func (node *Node) findSuccessor(id *big.Int, address NodeAddress) (NodeAddress, 
 		return nextNode, nil
 	}
 
-	return "", nil
+	return "", nil // TODO: "report error"
 }
 
-
-
 func (node *Node) closestPrecedingNode(id *big.Int) (NodeAddress, error) {
-	// TODO: Implement
-	// skip this loop if you do not have finger tables implemented yet
-        // for i = m downto 1
-        //     if (finger[i] ∈ (n,id))
-        //         return finger[i];
-        // return successor;
-	return "", nil
+	for i := len(node.FingerTable) - 1; i > 0; i-- {
+		fingerEntry := node.FingerTable[i]
+		if isBetween(node.ID, fingerEntry.ID, id, false) {
+			return fingerEntry.Address, nil
+		}
+	}
+
+	return node.Successor.Address, nil
 }
 
 type GetPredecessorArgs struct{}
 
 type GetPredecessorReply struct {
-    Predecessor NodeAddress
+	Predecessor NodeAddress
 }
 
 func (node *Node) GetPredecessor(args *GetPredecessorArgs, reply *GetPredecessorReply) error {
- 	if node.Predecessor != nil {
-        reply.Predecessor = *node.Predecessor
-    }
-    return nil
+	if node.Predecessor != nil {
+		reply.Predecessor = node.Predecessor.Address
+	}
+	return nil
 }
 
 func (node *Node) stabilize() error {
-	var successor NodeAddress
-    for _, addr := range node.Successors {
-        successor = addr
-        break
-    }	
-
-	if successor == "" {
-        return nil
-    }
-
 	args := &GetPredecessorArgs{}
-    reply := &GetPredecessorReply{}
-    err := CallRPC(string(successor), "Node.GetPredecessor", args, reply)
-    if err != nil {
-        return err
-    }
+	reply := &GetPredecessorReply{}
+	err := CallNodeRPC(node.Successor.Address, "Node.GetPredecessor", args, reply)
+	if err != nil {
+		return err
+	}
 
-	x := reply.Predecessor // the sucessors predecessor
+	x := reply.Predecessor
+	xID := computeNodeID(x)
 
-	// if (x ∈ (n,successor))
-	if x != "" && isBetween(node.ID, hashString(string(x)), hashString(string(successor))) {
-		node.Successors[big.NewInt(0)] = x
-        successor = x
-    }
+	if isBetween(node.ID, xID, node.Successor.ID, false) {
+		node.Successor = IdPair{ID: xID, Address: x}
+	}
 
-	// successor.notify(n);
 	notifyArgs := &NotifyArgs{ID: node.ID, Address: node.Address}
-    notifyReply := &NotifyReply{}
-    return CallRPC(string(successor), "Node.Notify", notifyArgs, notifyReply)
+	notifyReply := &NotifyReply{}
+	return CallNodeRPC(node.Successor.Address, "Node.Notify", notifyArgs, notifyReply)
 }
 
 type NotifyArgs struct {
-    ID      *big.Int
-    Address NodeAddress
+	ID      *big.Int
+	Address NodeAddress
 }
 
 type NotifyReply struct{}
 
-//if (predecessor is nil or n ∈ (predecessor, n))
-//		predecessor = n
 func (node *Node) Notify(args *NotifyArgs, reply *NotifyReply) error {
-	if node.Predecessor == nil || isBetween(hashString(string(*node.Predecessor)), args.ID, node.ID) {
-		node.Predecessor = &args.Address
+	if node.Predecessor == nil || isBetween(node.Predecessor.ID, args.ID, node.ID, false) {
+		node.Predecessor = &IdPair{ID: args.ID, Address: args.Address}
 	}
 	return nil
 }
 
 func (node *Node) fixFingers() error {
-	var nextNode int
-	nextNode += 1
-	if nextNode >= len(node.FingerTable) {
-		nextNode = 1
+	successor, err := node.findSuccessorIteratively(jump(node.Address, node.nextFingerToFix), node.Address)
+	if err != nil {
+		return err
 	}
-	node.FingerTable[nextNode] = "" // TODO implement findSuccessor(node.ID + 2^(nextNode-1))		
-	
+
+	node.FingerTable[node.nextFingerToFix] = IdPair{ID: computeNodeID(successor), Address: successor}
+
+	node.nextFingerToFix++
+	if node.nextFingerToFix >= FingerTableSize {
+		node.nextFingerToFix = 1
+	}
+
 	return nil
 }
 
 func (node *Node) checkPredecessor() error {
-    args := &GetPredecessorArgs{}
-    reply := &GetPredecessorReply{}
-    
-    // Attempt RPC to predecessor
-    err := CallRPC(string(*node.Predecessor), "Node.GetPredecessor", args, reply)
-    
-    // If RPC fails, predecessor has crashed 
-    if err != nil {
-        node.Predecessor = nil
-        return nil
-    }
+	if node.Predecessor == nil {
+		return nil
+	}
 
-    return nil
+	args := &GetPredecessorArgs{}
+	reply := &GetPredecessorReply{}
+
+	// Attempt RPC to predecessor
+	err := CallNodeRPC(node.Predecessor.Address, "Node.GetPredecessor", args, reply)
+
+	// If RPC fails, predecessor has crashed
+	if err != nil {
+		node.Predecessor = nil
+	}
+
+	return nil
 }
 
 func (node *Node) startMaintenence() {

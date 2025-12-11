@@ -1,7 +1,8 @@
-package chord
+package main
 
 import (
 	"flag"
+	"fmt"
 	"net"
 )
 
@@ -28,33 +29,38 @@ func main() {
 	identifier := flag.String("i", "", "The identifier (ID) assigned to the Chord client which will override the ID computed by the SHA1 sum of the client's IP address and port number")
 	flag.Parse()
 
-	node := MakeNode(NodeAddress(net.JoinHostPort(*listenIp, string(*port))), *stabilizeInterval, *fixFingersInterval, *checkPredecessorInterval, *successorCount, *identifier)
+	node := MakeNode(NodeAddress(net.JoinHostPort(*listenIp, fmt.Sprint(*port))), *stabilizeInterval, *fixFingersInterval, *checkPredecessorInterval, *successorCount, identifier)
 
 	if *joinAddress != "" && *joinPort != 0 {
 		node.CreateRing()
 	} else {
-		node.JoinRing(NodeAddress(net.JoinHostPort(*listenIp, string(*port))))
+		node.JoinRing(NodeAddress(net.JoinHostPort(*joinAddress, fmt.Sprint(*joinPort))))
 	}
 
-	return
+	node.Start()
 }
 
-func find() (NodeAddress, error) {
-	return "", nil
-}
-
-func notify() error {
-	return nil
-}
-
+// ‘Lookup’ takes as input the name of a file to be searched (e.g., “Hello.txt”).
+//
+//	The Chord client takes this string, hashes it to a key in the identifier space,
+//	and performs a search for the node that is the successor to the key (i.e., the owner of the key).
+//	The Chord client then outputs that node’s identifier, IP address, port, and the contents of the file.
 func lookup() error {
 	return nil
 }
 
+// 'StoreFile' takes the location of a file on a local disk, then performs a lookup to find the Chord
+//
+//	node to store the file at, then uploading the file to the Chord ring.
 func storeFile() error {
 	return nil
 }
 
+// ‘PrintState’ requires no input. The Chord client outputs its local state information at the current time, which consists of:
+// The Chord client’s own node information and its stored files,
+// The node information for all nodes in the successor list,
+// The node information for all nodes in the finger table,
+// where “node information” corresponds to the identifier, IP address, and port for a given node.
 func printState() error {
 	return nil
 }
