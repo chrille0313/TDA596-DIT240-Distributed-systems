@@ -12,8 +12,10 @@ var two = big.NewInt(2)
 var hashMod = new(big.Int).Exp(big.NewInt(2), big.NewInt(keySize), nil)
 
 func CallRepeatedly(method func() error, timeBetweenCalls time.Duration) {
-	method()
-	time.Sleep(timeBetweenCalls)
+	for {
+		method()
+		time.Sleep(timeBetweenCalls)
+	}
 }
 
 func hashString(str string) *big.Int {

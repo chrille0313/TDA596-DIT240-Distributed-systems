@@ -18,20 +18,22 @@ func StartRPCServer(address string, obj any) {
 	}
 }
 
-func CallNodeRPC(address NodeAddress, method string, args, reply any) error {
-	return CallRPC(string(address), method, args, reply)
+func CallNodeRPC[Targs any, TReply any](address NodeAddress, method string, args *Targs) (*TReply, error) {
+	return CallRPC[Targs, TReply](string(address), method, args)
 }
 
-func CallRPC(address string, method string, args, reply any) error {
+func CallRPC[Targs any, TReply any](address string, method string, args *Targs) (*TReply, error) {
+	reply := new(TReply)
+
 	client, err := rpc.DialHTTP("tcp", string(address))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer client.Close()
 
 	if err := client.Call(method, args, reply); err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return reply, nil
 }

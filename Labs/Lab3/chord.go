@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
+	"log"
 	"net"
+	"os"
+	"strings"
 )
 
 // The Chord client will open a TCP socket and listen for incoming connections on port specified by -p.
@@ -29,15 +33,70 @@ func main() {
 	identifier := flag.String("i", "", "The identifier (ID) assigned to the Chord client which will override the ID computed by the SHA1 sum of the client's IP address and port number")
 	flag.Parse()
 
-	node := MakeNode(NodeAddress(net.JoinHostPort(*listenIp, fmt.Sprint(*port))), *stabilizeInterval, *fixFingersInterval, *checkPredecessorInterval, *successorCount, identifier)
+	node := MakeNode(NodeAddress(net.JoinHostPort(*listenIp, fmt.Sprint(*port))), *stabilizeInterval, *fixFingersInterval, *checkPredecessorInterval, *successorCount, *identifier)
 
-	if *joinAddress != "" && *joinPort != 0 {
+	if *joinAddress == "" && *joinPort == 0 {
 		node.CreateRing()
 	} else {
 		node.JoinRing(NodeAddress(net.JoinHostPort(*joinAddress, fmt.Sprint(*joinPort))))
 	}
 
-	node.Start()
+	go node.Start()
+
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for {
+		fmt.Print("> ")
+		scanner.Scan()
+		err := scanner.Err()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		input := scanner.Text()
+		args := strings.Split(input, " ")
+
+		if len(args) == 0 {
+			fmt.Println("Invalid input!")
+			continue
+		}
+
+		command := args[0]
+
+		switch command {
+		case "Lookup":
+			if len(args) < 2 {
+				fmt.Println("No file provided!")
+			}
+
+			file := args[1]
+			err := node.lookup(file)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			}
+
+		case "StoreFile":
+			if len(args) < 2 {
+				fmt.Println("No file path provided!")
+				continue
+			}
+
+			path := args[1]
+			err := storeFile(path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			}
+
+		case "PrintState":
+			err := node.PrintState()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			}
+
+		default:
+			fmt.Println("Unknown command!")
+		}
+	}
 }
 
 // ‘Lookup’ takes as input the name of a file to be searched (e.g., “Hello.txt”).
@@ -45,22 +104,15 @@ func main() {
 //	The Chord client takes this string, hashes it to a key in the identifier space,
 //	and performs a search for the node that is the successor to the key (i.e., the owner of the key).
 //	The Chord client then outputs that node’s identifier, IP address, port, and the contents of the file.
-func lookup() error {
+func (node *Node) lookup(filename string) error {
+	key := hashString(filename)
+	node.findSuccessorIteratively(key, node.Address)
 	return nil
 }
 
 // 'StoreFile' takes the location of a file on a local disk, then performs a lookup to find the Chord
 //
 //	node to store the file at, then uploading the file to the Chord ring.
-func storeFile() error {
-	return nil
-}
-
-// ‘PrintState’ requires no input. The Chord client outputs its local state information at the current time, which consists of:
-// The Chord client’s own node information and its stored files,
-// The node information for all nodes in the successor list,
-// The node information for all nodes in the finger table,
-// where “node information” corresponds to the identifier, IP address, and port for a given node.
-func printState() error {
+func storeFile(filePath string) error {
 	return nil
 }

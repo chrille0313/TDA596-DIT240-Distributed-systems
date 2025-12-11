@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math/big"
 	"time"
 )
@@ -24,7 +25,8 @@ type Node struct {
 	Address     NodeAddress
 	FingerTable []IdPair
 	Predecessor *IdPair
-	Successor   IdPair // TODO: Change to list of successors
+	Successor   IdPair            // TODO: Change to list of successors
+	StoredFiles map[string][]byte // Local file storage: filename -> file contents
 
 	nextFingerToFix          int
 	stabilizeInterval        time.Duration // --ts
@@ -32,15 +34,16 @@ type Node struct {
 	checkPredecessorInterval time.Duration // --tcp
 }
 
-func MakeNode(address NodeAddress, stabilizeInterval, fixFingersInterval, checkPredecessorInterval, successorCount int, identifier *string) *Node {
-	if identifier != nil {
-		address = NodeAddress(*identifier)
+func MakeNode(address NodeAddress, stabilizeInterval, fixFingersInterval, checkPredecessorInterval, successorCount int, identifier string) *Node {
+	if identifier != "" {
+		address = NodeAddress(identifier)
 	}
 
 	return &Node{
 		ID:                       computeNodeID(address),
 		Address:                  address,
-		FingerTable:              make([]IdPair, 0, FingerTableSize),
+		FingerTable:              make([]IdPair, FingerTableSize),
+		StoredFiles:              make(map[string][]byte),
 		nextFingerToFix:          1,
 		stabilizeInterval:        time.Duration(stabilizeInterval) * time.Millisecond,
 		fixFingersInterval:       time.Duration(fixFingersInterval) * time.Millisecond,
@@ -54,7 +57,7 @@ func computeNodeID(address NodeAddress) *big.Int {
 
 func (node *Node) Start() {
 	// TODO: Implement
-	node.startMaintenence()
+	go node.startMaintenence()
 	StartRPCServer(string(node.Address), node)
 }
 
@@ -67,7 +70,9 @@ func (node *Node) CreateRing() error {
 func (node *Node) JoinRing(joinAdress NodeAddress) error {
 	node.Predecessor = nil
 	successor, err := node.findSuccessorIteratively(node.ID, joinAdress)
+	fmt.Printf("join successor: %v\n", successor)
 	if err != nil {
+		fmt.Printf("errore: %v \n", err)
 		return err
 	}
 	node.Successor = IdPair{ID: computeNodeID(successor), Address: successor}
@@ -100,13 +105,12 @@ func (node *Node) FindSuccessor(args *FindSuccessorArgs, reply *FindSuccessorRep
 	return nil
 }
 
-func (node *Node) findSuccessorIteratively(id *big.Int, address NodeAddress) (NodeAddress, error) {
-	found, nextNode := false, address
+func (node *Node) findSuccessorIteratively(id *big.Int, startAdress NodeAddress) (NodeAddress, error) {
+	found, nextNode := false, startAdress
 	i := 0
 	for !found && i < MaxHops {
 		args := &FindSuccessorArgs{ID: id}
-		reply := &FindSuccessorReply{}
-		err := CallNodeRPC(nextNode, "Node.FindSuccessor", args, reply)
+		reply, err := CallNodeRPC[FindSuccessorArgs, FindSuccessorReply](nextNode, "Node.FindSuccessor", args)
 		if err != nil {
 			return "", err
 		}
@@ -136,34 +140,34 @@ func (node *Node) closestPrecedingNode(id *big.Int) (NodeAddress, error) {
 type GetPredecessorArgs struct{}
 
 type GetPredecessorReply struct {
-	Predecessor NodeAddress
+	Predecessor *NodeAddress
 }
 
 func (node *Node) GetPredecessor(args *GetPredecessorArgs, reply *GetPredecessorReply) error {
 	if node.Predecessor != nil {
-		reply.Predecessor = node.Predecessor.Address
+		reply.Predecessor = &node.Predecessor.Address
 	}
 	return nil
 }
 
 func (node *Node) stabilize() error {
 	args := &GetPredecessorArgs{}
-	reply := &GetPredecessorReply{}
-	err := CallNodeRPC(node.Successor.Address, "Node.GetPredecessor", args, reply)
+	reply, err := CallNodeRPC[GetPredecessorArgs, GetPredecessorReply](node.Successor.Address, "Node.GetPredecessor", args)
 	if err != nil {
 		return err
 	}
-
 	x := reply.Predecessor
-	xID := computeNodeID(x)
 
-	if isBetween(node.ID, xID, node.Successor.ID, false) {
-		node.Successor = IdPair{ID: xID, Address: x}
+	if x != nil {
+		xID := computeNodeID(*x)
+		if isBetween(node.ID, xID, node.Successor.ID, false) {
+			node.Successor = IdPair{ID: xID, Address: *x}
+		}
 	}
 
 	notifyArgs := &NotifyArgs{ID: node.ID, Address: node.Address}
-	notifyReply := &NotifyReply{}
-	return CallNodeRPC(node.Successor.Address, "Node.Notify", notifyArgs, notifyReply)
+	_, err = CallNodeRPC[NotifyArgs, NotifyReply](node.Successor.Address, "Node.Notify", notifyArgs)
+	return err
 }
 
 type NotifyArgs struct {
@@ -181,11 +185,13 @@ func (node *Node) Notify(args *NotifyArgs, reply *NotifyReply) error {
 }
 
 func (node *Node) fixFingers() error {
-	successor, err := node.findSuccessorIteratively(jump(node.Address, node.nextFingerToFix), node.Address)
+	jumpAddress := jump(node.Address, node.nextFingerToFix)
+	successor, err := node.findSuccessorIteratively(jumpAddress, node.Address)
 	if err != nil {
+		// fmt.Printf("errore: %v \n", err)
 		return err
 	}
-
+	// fmt.Printf("successor; %v", successor)
 	node.FingerTable[node.nextFingerToFix] = IdPair{ID: computeNodeID(successor), Address: successor}
 
 	node.nextFingerToFix++
@@ -202,10 +208,9 @@ func (node *Node) checkPredecessor() error {
 	}
 
 	args := &GetPredecessorArgs{}
-	reply := &GetPredecessorReply{}
 
 	// Attempt RPC to predecessor
-	err := CallNodeRPC(node.Predecessor.Address, "Node.GetPredecessor", args, reply)
+	_, err := CallNodeRPC[GetPredecessorArgs, GetPredecessorReply](node.Predecessor.Address, "Node.GetPredecessor", args)
 
 	// If RPC fails, predecessor has crashed
 	if err != nil {
@@ -216,7 +221,52 @@ func (node *Node) checkPredecessor() error {
 }
 
 func (node *Node) startMaintenence() {
-	go CallRepeatedly(node.stabilize, node.stabilizeInterval)
-	go CallRepeatedly(node.fixFingers, node.fixFingersInterval)
-	go CallRepeatedly(node.checkPredecessor, node.checkPredecessorInterval)
+	for {
+		// CallRepeatedly(node.stabilize, node.stabilizeInterval)
+		node.stabilize()
+		time.Sleep(node.stabilizeInterval)
+		// CallRepeatedly(node.fixFingers, node.fixFingersInterval)
+		// node.fixFingers()
+		// time.Sleep(node.fixFingersInterval)
+		// CallRepeatedly(node.checkPredecessor, node.checkPredecessorInterval)
+		node.checkPredecessor()
+		time.Sleep(node.checkPredecessorInterval)
+	}
+}
+
+// ‘PrintState’ requires no input. The Chord client outputs its local state information at the current time, which consists of:
+// The Chord client’s own node information and its stored files,
+// The node information for all nodes in the successor list,
+// The node information for all nodes in the finger table,
+// where “node information” corresponds to the identifier, IP address, and port for a given node.
+func (node *Node) PrintState() error {
+
+	// The Chord client’s own node information and its stored files
+	fmt.Println("====NODE====")
+	fmt.Printf("Node ID: %s\n", node.ID.String())
+	fmt.Printf("%s\n", node.Address)
+	for filename := range node.StoredFiles {
+		fmt.Printf("Stored file: %s\n", filename)
+	}
+
+	fmt.Println("====PREDECESSOR====")
+	if node.Predecessor != nil {
+		fmt.Printf("Predecessor ID: %s\n", node.Predecessor.ID.String())
+		fmt.Printf("%s\n", node.Predecessor.Address)
+	} else {
+		fmt.Println("Predecessor: <nil>")
+	}
+
+	// The node information for all nodes in the successor list,
+	fmt.Println("====SUCCESSOR LIST====")
+	fmt.Printf("Successor ID: %s\n", node.Successor.ID.String())
+	fmt.Printf("%s\n", node.Successor.Address)
+
+	// The node information for all nodes in the finger table
+	fmt.Println("====FINGER TABLE====")
+	for i, finger := range node.FingerTable {
+		fmt.Printf("Finger %d: ID: %s, Address: %s\n", i, finger.ID.String(), finger.Address)
+	}
+
+	return nil
 }
