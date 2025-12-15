@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"os"
 	"strings"
@@ -33,8 +34,17 @@ func main() {
 	identifier := flag.String("i", "", "The identifier (ID) assigned to the Chord client which will override the ID computed by the SHA1 sum of the client's IP address and port number")
 	flag.Parse()
 
-	node := MakeNode(NodeAddress(net.JoinHostPort(*listenIp, fmt.Sprint(*port))), *stabilizeInterval, *fixFingersInterval, *checkPredecessorInterval, *successorCount, *identifier)
+	var id *big.Int = nil
+	if *identifier != "" {
+		var ok bool
+		id, ok = new(big.Int).SetString(*identifier, 10)
+		if !ok {
+			log.Fatalf("Invalid identifier: %s", *identifier)
+		}
+	}
 
+	node := MakeNode(NodeAddress(net.JoinHostPort(*listenIp, fmt.Sprint(*port))), *stabilizeInterval, *fixFingersInterval, *checkPredecessorInterval, *successorCount, id)
+	
 	if *joinAddress == "" && *joinPort == 0 {
 		node.CreateRing()
 	} else {
@@ -92,6 +102,12 @@ func main() {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			}
+
+		case "Quit":
+			os.Exit(0)
+
+		case "q":
+			os.Exit(0)
 
 		default:
 			fmt.Println("Unknown command!")
