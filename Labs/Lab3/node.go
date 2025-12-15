@@ -23,9 +23,9 @@ type IdPair struct {
 type Node struct {
 	ID          *big.Int
 	Address     NodeAddress
-	FingerTable []IdPair
 	Predecessor *IdPair
-	Successor   IdPair            // TODO: Change to list of successors
+	Successors  []*IdPair
+	FingerTable []*IdPair
 
 	StoredFiles map[string][]byte // Local file storage: filename -> file contents
 
@@ -47,7 +47,8 @@ func MakeNode(address NodeAddress, stabilizeInterval, fixFingersInterval, checkP
 	return &Node{
 		ID:                       id,
 		Address:                  address,
-		FingerTable:              make([]IdPair, FingerTableSize),
+		Successors:               make([]*IdPair, successorCount),
+		FingerTable:              make([]*IdPair, FingerTableSize),
 		StoredFiles:              make(map[string][]byte),
 		nextFingerToFix:          1,
 		stabilizeInterval:        time.Duration(stabilizeInterval) * time.Millisecond,
@@ -67,7 +68,6 @@ func (node *Node) Start() {
 
 func (node *Node) CreateRing() error {
 	node.Predecessor = nil
-	node.Successor = IdPair{ID: node.ID, Address: node.Address}
 	return nil
 }
 
@@ -254,7 +254,13 @@ func (node *Node) PrintState() error {
 		if finger.ID != nil {
 			idStr = finger.ID.String()
 		}
-		fmt.Printf("Finger %d: ID: %s, Address: %s\n", i, idStr, finger.Address)
+
+		addressStr := "<nil>"
+		if finger != nil {
+			addressStr = string(finger.Address)
+		}
+
+		fmt.Printf("Finger %d: ID: %s, Address: %s\n", i, idStr, addressStr)
 	}
 
 	return nil

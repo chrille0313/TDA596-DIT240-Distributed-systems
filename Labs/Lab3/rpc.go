@@ -17,6 +17,11 @@ func ListenRPC(address string, obj any) {
 	}
 }
 
+func IsNodeAliveRPC(address NodeAddress) bool {
+	_, err := CallNodeRPC[IsAliveArgs, IsAliveReply](address, "Node.IsAlive", &IsAliveArgs{})
+	return err == nil
+}
+
 func CallNodeRPC[Targs any, TReply any](address NodeAddress, method string, args *Targs) (*TReply, error) {
 	return CallRPC[Targs, TReply](string(address), method, args)
 }
