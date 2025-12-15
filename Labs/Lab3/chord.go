@@ -77,6 +77,7 @@ func main() {
 		case "Lookup":
 			if len(args) < 2 {
 				fmt.Println("No file provided!")
+				continue
 			}
 
 			file := args[1]
