@@ -6,8 +6,7 @@ import (
 	"net/rpc"
 )
 
-// Start a coordinator server that listens for RPCs over HTTP.
-func StartRPCServer(address string, obj any) {
+func ListenRPC(address string, obj any) {
 	if err := rpc.Register(obj); err != nil {
 		log.Fatalf("cannot register RPC server: %v", err)
 	}
