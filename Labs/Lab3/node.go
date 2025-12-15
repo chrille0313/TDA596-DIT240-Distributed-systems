@@ -26,6 +26,7 @@ type Node struct {
 	FingerTable []IdPair
 	Predecessor *IdPair
 	Successor   IdPair            // TODO: Change to list of successors
+
 	StoredFiles map[string][]byte // Local file storage: filename -> file contents
 
 	nextFingerToFix          int
@@ -34,13 +35,17 @@ type Node struct {
 	checkPredecessorInterval time.Duration // --tcp
 }
 
-func MakeNode(address NodeAddress, stabilizeInterval, fixFingersInterval, checkPredecessorInterval, successorCount int, identifier string) *Node {
-	if identifier != "" {
-		address = NodeAddress(identifier)
+func MakeNode(address NodeAddress, stabilizeInterval, fixFingersInterval, checkPredecessorInterval, successorCount int, identifier *big.Int) *Node {
+	var id *big.Int
+
+	if identifier != nil {
+		id = identifier
+	} else {
+		id = computeNodeID(address)
 	}
 
 	return &Node{
-		ID:                       computeNodeID(address),
+		ID:                       id,
 		Address:                  address,
 		FingerTable:              make([]IdPair, FingerTableSize),
 		StoredFiles:              make(map[string][]byte),
@@ -56,9 +61,8 @@ func computeNodeID(address NodeAddress) *big.Int {
 }
 
 func (node *Node) Start() {
-	// TODO: Implement
-	go node.startMaintenence()
-	StartRPCServer(string(node.Address), node)
+	node.startMaintenence()
+	ListenRPC(string(node.Address), node)
 }
 
 func (node *Node) CreateRing() error {
@@ -70,7 +74,6 @@ func (node *Node) CreateRing() error {
 func (node *Node) JoinRing(joinAdress NodeAddress) error {
 	node.Predecessor = nil
 	successor, err := node.findSuccessorIteratively(node.ID, joinAdress)
-	fmt.Printf("join successor: %v\n", successor)
 	if err != nil {
 		fmt.Printf("errore: %v \n", err)
 		return err
@@ -84,18 +87,18 @@ type FindSuccessorArgs struct {
 }
 
 type FindSuccessorReply struct {
-	found     bool
+	Found     bool
 	Successor NodeAddress
 }
 
 func (node *Node) FindSuccessor(args *FindSuccessorArgs, reply *FindSuccessorReply) error {
 	if isBetween(node.ID, args.ID, node.Successor.ID, true) {
-		reply.found = true
+		reply.Found = true
 		reply.Successor = node.Successor.Address
 		return nil
 	}
 
-	reply.found = false
+	reply.Found = false
 	successor, err := node.closestPrecedingNode(args.ID)
 	if err != nil {
 		return err
@@ -115,7 +118,7 @@ func (node *Node) findSuccessorIteratively(id *big.Int, startAdress NodeAddress)
 			return "", err
 		}
 
-		found, nextNode = reply.found, reply.Successor
+		found, nextNode = reply.Found, reply.Successor
 		i++
 	}
 
@@ -129,7 +132,7 @@ func (node *Node) findSuccessorIteratively(id *big.Int, startAdress NodeAddress)
 func (node *Node) closestPrecedingNode(id *big.Int) (NodeAddress, error) {
 	for i := len(node.FingerTable) - 1; i > 0; i-- {
 		fingerEntry := node.FingerTable[i]
-		if isBetween(node.ID, fingerEntry.ID, id, false) {
+		if fingerEntry.ID != nil && isBetween(node.ID, fingerEntry.ID, id, false) {
 			return fingerEntry.Address, nil
 		}
 	}
@@ -188,10 +191,9 @@ func (node *Node) fixFingers() error {
 	jumpAddress := jump(node.Address, node.nextFingerToFix)
 	successor, err := node.findSuccessorIteratively(jumpAddress, node.Address)
 	if err != nil {
-		// fmt.Printf("errore: %v \n", err)
 		return err
 	}
-	// fmt.Printf("successor; %v", successor)
+
 	node.FingerTable[node.nextFingerToFix] = IdPair{ID: computeNodeID(successor), Address: successor}
 
 	node.nextFingerToFix++
@@ -221,27 +223,12 @@ func (node *Node) checkPredecessor() error {
 }
 
 func (node *Node) startMaintenence() {
-	for {
-		// CallRepeatedly(node.stabilize, node.stabilizeInterval)
-		node.stabilize()
-		time.Sleep(node.stabilizeInterval)
-		// CallRepeatedly(node.fixFingers, node.fixFingersInterval)
-		// node.fixFingers()
-		// time.Sleep(node.fixFingersInterval)
-		// CallRepeatedly(node.checkPredecessor, node.checkPredecessorInterval)
-		node.checkPredecessor()
-		time.Sleep(node.checkPredecessorInterval)
-	}
+	go CallRepeatedly(node.stabilize, node.stabilizeInterval)
+	go CallRepeatedly(node.fixFingers, node.fixFingersInterval)
+	go CallRepeatedly(node.checkPredecessor, node.checkPredecessorInterval)
 }
 
-// ‘PrintState’ requires no input. The Chord client outputs its local state information at the current time, which consists of:
-// The Chord client’s own node information and its stored files,
-// The node information for all nodes in the successor list,
-// The node information for all nodes in the finger table,
-// where “node information” corresponds to the identifier, IP address, and port for a given node.
 func (node *Node) PrintState() error {
-
-	// The Chord client’s own node information and its stored files
 	fmt.Println("====NODE====")
 	fmt.Printf("Node ID: %s\n", node.ID.String())
 	fmt.Printf("%s\n", node.Address)
@@ -257,15 +244,17 @@ func (node *Node) PrintState() error {
 		fmt.Println("Predecessor: <nil>")
 	}
 
-	// The node information for all nodes in the successor list,
 	fmt.Println("====SUCCESSOR LIST====")
 	fmt.Printf("Successor ID: %s\n", node.Successor.ID.String())
 	fmt.Printf("%s\n", node.Successor.Address)
 
-	// The node information for all nodes in the finger table
 	fmt.Println("====FINGER TABLE====")
 	for i, finger := range node.FingerTable {
-		fmt.Printf("Finger %d: ID: %s, Address: %s\n", i, finger.ID.String(), finger.Address)
+		idStr := "<nil>"
+		if finger.ID != nil {
+			idStr = finger.ID.String()
+		}
+		fmt.Printf("Finger %d: ID: %s, Address: %s\n", i, idStr, finger.Address)
 	}
 
 	return nil
