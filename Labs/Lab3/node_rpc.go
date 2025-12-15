@@ -78,3 +78,35 @@ func (node *Node) Notify(args *NotifyArgs, reply *NotifyReply) error {
 	return nil
 }
 
+type StoreFileArgs struct {
+	Filename string
+	Data     []byte
+}
+
+type StoreFileReply struct {}
+
+func (node *Node) StoreFile(args *StoreFileArgs, reply *StoreFileReply) error {
+	node.StoredFiles[args.Filename] = args.Data
+	return nil
+}
+
+type RetrieveFileArgs struct {
+	Filename string
+}
+
+type RetrieveFileReply struct {
+	Found bool
+	Data  []byte
+}
+
+func (node *Node) RetrieveFile(args *RetrieveFileArgs, reply *RetrieveFileReply) error {
+	data, ok := node.StoredFiles[args.Filename]
+	if !ok {
+		reply.Found = false
+		return nil
+	}
+	reply.Found = true
+	reply.Data = data
+	return nil
+}
+

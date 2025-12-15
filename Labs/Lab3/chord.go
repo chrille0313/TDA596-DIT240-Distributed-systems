@@ -8,19 +8,9 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 )
-
-// The Chord client will open a TCP socket and listen for incoming connections on port specified by -p.
-// If neither --ja nor --jp is specified, then the Chord client starts a new ring by invoking ‘create’.
-// The Chord client will initialize the successor list and finger table appropriately (i.e., all will point
-// to the client itself).
-// Otherwise, the Chord client joins an existing ring by connecting to the Chord client specified by --ja
-//  and --jp and invoking ‘join’. The initial steps the Chord client takes when joining the network are
-// described in detail in Section IV.E.1 “Node Joins and Stabilization” of the Chord paper.
-// Periodically, the Chord client will invoke various stabilization routines in order to handle nodes
-// joining and leaving the network. The Chord client will invoke ‘stabilize’, ‘fix fingers’, and
-// ‘check predecessor’ every --ts, --tff, and --tcp milliseconds, respectively.
 
 func main() {
 	listenIp := flag.String("a", "0.0.0.0", "The IP address that the Chord client will bind to, as well as advertise to other nodes")
@@ -93,7 +83,12 @@ func main() {
 			}
 
 			path := args[1]
-			err := storeFile(path)
+			if !filepath.IsAbs(path) {
+				cwd, _ := os.Getwd()
+				path = filepath.Join(cwd, path)
+			}
+
+			err := node.storeFile(path)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			}
@@ -116,20 +111,62 @@ func main() {
 	}
 }
 
-// ‘Lookup’ takes as input the name of a file to be searched (e.g., “Hello.txt”).
-//
-//	The Chord client takes this string, hashes it to a key in the identifier space,
-//	and performs a search for the node that is the successor to the key (i.e., the owner of the key).
-//	The Chord client then outputs that node’s identifier, IP address, port, and the contents of the file.
 func (node *Node) lookup(filename string) error {
 	key := hashString(filename)
-	node.findSuccessorIteratively(key, node.Address)
+	owner, err := node.findSuccessorIteratively(key, node.Address)
+	if err != nil {
+		return err
+	}
+
+	ownerID := owner.ID.String()
+	ownerAddress := owner.Address
+
+	var data []byte
+	if ownerAddress == node.Address {
+		var ok bool
+		data, ok = node.StoredFiles[filename]
+		if !ok {
+			return fmt.Errorf("file %s not found locally", filename)
+		}
+	} else {
+		reply, err := CallNodeRPC[RetrieveFileArgs, RetrieveFileReply](ownerAddress, "Node.RetrieveFile", &RetrieveFileArgs{Filename: filename})
+		if err != nil {
+			return err
+		}
+		if !reply.Found {
+			return fmt.Errorf("file %s not found at owner", filename)
+		}
+		data = reply.Data
+	}
+
+	fmt.Printf("Owner ID: %s\nOwner Addr: %s\nContents:\n%s\n", ownerID, ownerAddress, string(data))
 	return nil
 }
 
-// 'StoreFile' takes the location of a file on a local disk, then performs a lookup to find the Chord
-//
-//	node to store the file at, then uploading the file to the Chord ring.
-func storeFile(filePath string) error {
+func (node *Node) storeFile(filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	filename := filepath.Base(filePath)
+	key := hashString(filename)
+	owner, err := node.findSuccessorIteratively(key, node.Address)
+	if err != nil {
+		return err
+	}
+
+	if owner.Address == node.Address {
+		node.StoredFiles[filename] = data
+		fmt.Printf("Stored %s locally (ID %s)\n", filename, node.ID.String())
+		return nil
+	}
+
+	_, err = CallNodeRPC[StoreFileArgs, StoreFileReply](owner.Address, "Node.StoreFile", &StoreFileArgs{Filename: filename, Data: data})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Stored %s on %s (ID %s)\n", filename, owner.Address, owner.ID.String())
 	return nil
 }

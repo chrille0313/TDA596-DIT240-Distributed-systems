@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/big"
+	"os"
 	"time"
 )
 
@@ -68,6 +69,9 @@ func (node *Node) Start() {
 
 func (node *Node) CreateRing() error {
 	node.Predecessor = nil
+	for i := range node.Successors {
+		node.Successors[i] = &IdPair{ID: node.ID, Address: node.Address}
+	}
 	return nil
 }
 
@@ -75,47 +79,33 @@ func (node *Node) JoinRing(joinAdress NodeAddress) error {
 	node.Predecessor = nil
 	successor, err := node.findSuccessorIteratively(node.ID, joinAdress)
 	if err != nil {
-		fmt.Printf("errore: %v \n", err)
+		fmt.Fprintf(os.Stderr, "JoinRing: findSuccessor error: %v\n", err)
 		return err
-	}
-	node.Successor = IdPair{ID: computeNodeID(successor), Address: successor}
-	return nil
-}
-
-type FindSuccessorArgs struct {
-	ID *big.Int
-}
-
-type FindSuccessorReply struct {
-	Found     bool
-	Successor NodeAddress
-}
-
-func (node *Node) FindSuccessor(args *FindSuccessorArgs, reply *FindSuccessorReply) error {
-	if isBetween(node.ID, args.ID, node.Successor.ID, true) {
-		reply.Found = true
-		reply.Successor = node.Successor.Address
-		return nil
+	} else if successor == nil {
+		return fmt.Errorf("failed to find successor for join")
 	}
 
-	reply.Found = false
-	successor, err := node.closestPrecedingNode(args.ID)
+	node.Successors[0] = successor
+
+	reply, err := CallNodeRPC[GetSuccessorListArgs, GetSuccessorListReply](successor.Address, "Node.GetSuccessorList", &GetSuccessorListArgs{})
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "JoinRing: get successor list error: %v\n", err)
 		return err
 	}
-	reply.Successor = successor
 
+	node.mergeSuccessorList(reply.Successors)
+	
 	return nil
 }
 
-func (node *Node) findSuccessorIteratively(id *big.Int, startAdress NodeAddress) (NodeAddress, error) {
+func (node *Node) findSuccessorIteratively(id *big.Int, startAdress NodeAddress) (*IdPair, error) {
 	found, nextNode := false, startAdress
 	i := 0
 	for !found && i < MaxHops {
-		args := &FindSuccessorArgs{ID: id}
-		reply, err := CallNodeRPC[FindSuccessorArgs, FindSuccessorReply](nextNode, "Node.FindSuccessor", args)
+		reply, err := CallNodeRPC[FindSuccessorArgs, FindSuccessorReply](nextNode, "Node.FindSuccessor", &FindSuccessorArgs{ID: id})
 		if err != nil {
-			return "", err
+			fmt.Fprintf(os.Stderr, "findSuccessorIteratively: RPC error: %v\n", err)
+			return nil, err
 		}
 
 		found, nextNode = reply.Found, reply.Successor
@@ -123,81 +113,122 @@ func (node *Node) findSuccessorIteratively(id *big.Int, startAdress NodeAddress)
 	}
 
 	if found {
-		return nextNode, nil
+		return &IdPair{ID: computeNodeID(nextNode), Address: nextNode}, nil
 	}
 
-	return "", nil // TODO: "report error"
+	return nil, fmt.Errorf("failed to find successor after %d hops", i)
 }
 
 func (node *Node) closestPrecedingNode(id *big.Int) (NodeAddress, error) {
-	for i := len(node.FingerTable) - 1; i > 0; i-- {
+	for i := len(node.FingerTable) - 1; i >= 1; i-- {
 		fingerEntry := node.FingerTable[i]
-		if fingerEntry.ID != nil && isBetween(node.ID, fingerEntry.ID, id, false) {
+		if fingerEntry != nil &&
+			IsNodeAliveRPC(fingerEntry.Address) &&
+			isBetween(node.ID, fingerEntry.ID, id, true) {
 			return fingerEntry.Address, nil
 		}
 	}
 
-	return node.Successor.Address, nil
-}
-
-type GetPredecessorArgs struct{}
-
-type GetPredecessorReply struct {
-	Predecessor *NodeAddress
-}
-
-func (node *Node) GetPredecessor(args *GetPredecessorArgs, reply *GetPredecessorReply) error {
-	if node.Predecessor != nil {
-		reply.Predecessor = &node.Predecessor.Address
-	}
-	return nil
+	return node.popUntilAliveSuccessor().Address, nil
 }
 
 func (node *Node) stabilize() error {
-	args := &GetPredecessorArgs{}
-	reply, err := CallNodeRPC[GetPredecessorArgs, GetPredecessorReply](node.Successor.Address, "Node.GetPredecessor", args)
+	var lastErr error
+	for attempts := 0; attempts < len(node.Successors); attempts++ {
+		succ := node.popUntilAliveSuccessor()
+		err := node.tryStabilizeWithSuccessor(succ)
+		if err == nil {
+			return nil
+		}
+
+		fmt.Fprintf(os.Stderr, "stabilize: error with successor %s: %v\n", succ.Address, err)
+		lastErr = err
+		node.Successors[0] = nil
+		// On failure, loop to next alive successor
+	}
+	return lastErr
+}
+
+func (node *Node) tryStabilizeWithSuccessor(successor *IdPair) error {
+	// Ask successor for its predecessor
+	replyPred, err := CallNodeRPC[GetPredecessorArgs, GetPredecessorReply](successor.Address, "Node.GetPredecessor", &GetPredecessorArgs{})
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "stabilize: GetPredecessor error from %s: %v\n", successor.Address, err)
 		return err
 	}
-	x := reply.Predecessor
 
-	if x != nil {
-		xID := computeNodeID(*x)
-		if isBetween(node.ID, xID, node.Successor.ID, false) {
-			node.Successor = IdPair{ID: xID, Address: *x}
+	// Possibly adopt successor's predecessor if closer.
+	if replyPred.Predecessor != nil && isBetween(node.ID, replyPred.Predecessor.ID, successor.ID, true) {
+		node.Successors[0] = replyPred.Predecessor
+		successor = node.Successors[0]
+	}
+
+	// Notify successor
+	notifyArgs := &NotifyArgs{Node: &IdPair{ID: node.ID, Address: node.Address}}
+	_, err = CallNodeRPC[NotifyArgs, NotifyReply](successor.Address, "Node.Notify", notifyArgs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stabilize: Notify error to %s: %v\n", successor.Address, err)
+		return err
+	}
+
+	// Reconcile successor list from successor
+	replySuccList, err := CallNodeRPC[GetSuccessorListArgs, GetSuccessorListReply](successor.Address, "Node.GetSuccessorList", &GetSuccessorListArgs{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stabilize: GetSuccessorList error from %s: %v\n", successor.Address, err)
+		return err
+	}
+	node.mergeSuccessorList(replySuccList.Successors)
+
+	return nil
+}
+
+func (node *Node) popUntilAliveSuccessor() *IdPair {
+	// Find first live successor; rotate list so it becomes head.
+	liveIdx := -1
+	for i, succ := range node.Successors {
+		if succ != nil && IsNodeAliveRPC(succ.Address) {
+			liveIdx = i
+			break
 		}
 	}
 
-	notifyArgs := &NotifyArgs{ID: node.ID, Address: node.Address}
-	_, err = CallNodeRPC[NotifyArgs, NotifyReply](node.Successor.Address, "Node.Notify", notifyArgs)
-	return err
-}
-
-type NotifyArgs struct {
-	ID      *big.Int
-	Address NodeAddress
-}
-
-type NotifyReply struct{}
-
-func (node *Node) Notify(args *NotifyArgs, reply *NotifyReply) error {
-	if node.Predecessor == nil || isBetween(node.Predecessor.ID, args.ID, node.ID, false) {
-		node.Predecessor = &IdPair{ID: args.ID, Address: args.Address}
+	if liveIdx == -1 {
+		// No live successors; reset list to self.
+		self := &IdPair{ID: node.ID, Address: node.Address}
+		for i := range node.Successors {
+			node.Successors[i] = self
+		}
+		return self
 	}
-	return nil
+
+	if liveIdx > 0 {
+		head := node.Successors[liveIdx]
+		rest := append(node.Successors[liveIdx+1:], node.Successors[:liveIdx]...)
+		node.Successors = append([]*IdPair{head}, rest...)
+	}
+
+	// Fill any nil slots (if present) with self as a safety net.
+	for i := range node.Successors {
+		if node.Successors[i] == nil {
+			node.Successors[i] = &IdPair{ID: node.ID, Address: node.Address}
+		}
+	}
+
+	return node.Successors[0]
 }
 
 func (node *Node) fixFingers() error {
 	jumpAddress := jump(node.Address, node.nextFingerToFix)
 	successor, err := node.findSuccessorIteratively(jumpAddress, node.Address)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "fixFingers: findSuccessor error: %v\n", err)
 		return err
 	}
 
-	node.FingerTable[node.nextFingerToFix] = IdPair{ID: computeNodeID(successor), Address: successor}
-
+	node.FingerTable[node.nextFingerToFix] = successor
+	
 	node.nextFingerToFix++
-	if node.nextFingerToFix >= FingerTableSize {
+	if node.nextFingerToFix >= len(node.FingerTable) {
 		node.nextFingerToFix = 1
 	}
 
@@ -205,21 +236,22 @@ func (node *Node) fixFingers() error {
 }
 
 func (node *Node) checkPredecessor() error {
-	if node.Predecessor == nil {
-		return nil
-	}
-
-	args := &GetPredecessorArgs{}
-
-	// Attempt RPC to predecessor
-	_, err := CallNodeRPC[GetPredecessorArgs, GetPredecessorReply](node.Predecessor.Address, "Node.GetPredecessor", args)
-
-	// If RPC fails, predecessor has crashed
-	if err != nil {
+	if node.Predecessor != nil && !IsNodeAliveRPC(node.Predecessor.Address) {
 		node.Predecessor = nil
 	}
 
 	return nil
+}
+
+func (node *Node) mergeSuccessorList(successors []*IdPair) {
+	for i := 1; i < len(node.Successors); i++ {
+		if i-1 < len(successors) && successors[i-1] != nil {
+			node.Successors[i] = successors[i-1]
+		} else {
+			// Fallback to self for empty slots.
+			node.Successors[i] = &IdPair{ID: node.ID, Address: node.Address}
+		}
+	}
 }
 
 func (node *Node) startMaintenence() {
@@ -231,7 +263,7 @@ func (node *Node) startMaintenence() {
 func (node *Node) PrintState() error {
 	fmt.Println("====NODE====")
 	fmt.Printf("Node ID: %s\n", node.ID.String())
-	fmt.Printf("%s\n", node.Address)
+	fmt.Printf("Node Address: %s\n", node.Address)
 	for filename := range node.StoredFiles {
 		fmt.Printf("Stored file: %s\n", filename)
 	}
@@ -239,19 +271,30 @@ func (node *Node) PrintState() error {
 	fmt.Println("====PREDECESSOR====")
 	if node.Predecessor != nil {
 		fmt.Printf("Predecessor ID: %s\n", node.Predecessor.ID.String())
-		fmt.Printf("%s\n", node.Predecessor.Address)
+		fmt.Printf("Predecessor Address: %s\n", node.Predecessor.Address)
 	} else {
 		fmt.Println("Predecessor: <nil>")
 	}
 
 	fmt.Println("====SUCCESSOR LIST====")
-	fmt.Printf("Successor ID: %s\n", node.Successor.ID.String())
-	fmt.Printf("%s\n", node.Successor.Address)
+	for i, successor := range node.Successors {
+		idStr := "<nil>"
+		if successor != nil {
+			idStr = successor.ID.String()
+		}
+		fmt.Printf("Successor %d ID: %s\n", i, idStr)
+
+		addressStr := "<nil>"
+		if successor != nil {
+			addressStr = string(successor.Address)
+		}
+		fmt.Printf("Successor %d Address: %s\n", i, addressStr)
+	}
 
 	fmt.Println("====FINGER TABLE====")
 	for i, finger := range node.FingerTable {
 		idStr := "<nil>"
-		if finger.ID != nil {
+		if finger != nil {
 			idStr = finger.ID.String()
 		}
 
