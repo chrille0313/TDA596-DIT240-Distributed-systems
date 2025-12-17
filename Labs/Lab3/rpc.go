@@ -4,7 +4,6 @@ import (
 	"log"
 	"net/http"
 	"net/rpc"
-	"strings"
 )
 
 func ListenRPC(address string, obj any) {
@@ -13,7 +12,7 @@ func ListenRPC(address string, obj any) {
 	}
 
 	rpc.HandleHTTP()
-	if err := http.ListenAndServe("0.0.0.0:"+strings.Split(address, ":")[1], nil); err != nil {
+	if err := http.ListenAndServe(address, nil); err != nil {
 		log.Fatalf("cannot start server: %v", err)
 	}
 }
