@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -42,6 +43,7 @@ func main() {
 	}
 
 	go node.Start()
+	time.Sleep(500 * time.Millisecond) // Wait for RPC server to start
 
 	scanner := bufio.NewScanner(os.Stdin)
 
