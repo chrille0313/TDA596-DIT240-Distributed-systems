@@ -140,6 +140,7 @@ func (node *Node) stabilize() error {
 		succ := node.popUntilAliveSuccessor()
 		err := node.tryStabilizeWithSuccessor(succ)
 		if err == nil {
+			node.transferKeysToPredecessor()
 			return nil
 		}
 
@@ -253,6 +254,41 @@ func (node *Node) mergeSuccessorList(successors []*IdPair) {
 			// Fallback to self for empty slots.
 			node.Successors[i] = &IdPair{ID: node.ID, Address: node.PublicAddress}
 		}
+	}
+}
+
+func (node *Node) transferKeysToPredecessor() {
+	if node.Predecessor == nil {
+		return
+	}
+
+	for filename, data := range node.StoredFiles {
+		key := hashString(filename)
+		if isBetween(node.Predecessor.ID, key, node.ID, true) {
+			continue
+		}
+
+		owner, err := node.findSuccessorIteratively(key, node.PublicAddress)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "transferKeys: could not find owner for %s: %v\n", filename, err)
+			continue
+		}
+
+		if owner.Address == node.PublicAddress {
+			continue
+		}
+
+		_, err = CallNodeRPC[StoreFileArgs, StoreFileReply](owner.Address, "Node.StoreFile", &StoreFileArgs{
+			Filename: filename,
+			Data:     data,
+		})
+
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "transferKeys: failed to move %s to %s: %v\n", filename, owner.Address, err)
+			continue
+		}
+
+		delete(node.StoredFiles, filename)
 	}
 }
 
