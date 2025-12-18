@@ -22,11 +22,12 @@ type IdPair struct {
 }
 
 type Node struct {
-	ID          *big.Int
-	Address     NodeAddress
-	Predecessor *IdPair
-	Successors  []*IdPair
-	FingerTable []*IdPair
+	ID               *big.Int
+	BindAddress      NodeAddress
+	PublicAddress    NodeAddress
+	Predecessor      *IdPair
+	Successors       []*IdPair
+	FingerTable      []*IdPair
 
 	StoredFiles map[string][]byte // Local file storage: filename -> file contents
 
@@ -36,18 +37,19 @@ type Node struct {
 	checkPredecessorInterval time.Duration // --tcp
 }
 
-func MakeNode(address NodeAddress, stabilizeInterval, fixFingersInterval, checkPredecessorInterval, successorCount int, identifier *big.Int) *Node {
+func MakeNode(bindAddress NodeAddress, publicAddress NodeAddress, stabilizeInterval, fixFingersInterval, checkPredecessorInterval, successorCount int, identifier *big.Int) *Node {
 	var id *big.Int
 
 	if identifier != nil {
 		id = identifier
 	} else {
-		id = computeNodeID(address)
+		id = computeNodeID(publicAddress)
 	}
 
 	return &Node{
 		ID:                       id,
-		Address:                  address,
+		BindAddress:              bindAddress,
+		PublicAddress:            publicAddress,
 		Successors:               make([]*IdPair, successorCount),
 		FingerTable:              make([]*IdPair, FingerTableSize),
 		StoredFiles:              make(map[string][]byte),
@@ -64,13 +66,13 @@ func computeNodeID(address NodeAddress) *big.Int {
 
 func (node *Node) Start() {
 	node.startMaintenence()
-	ListenRPC(string(node.Address), node)
+	ListenRPC(string(node.BindAddress), node)
 }
 
 func (node *Node) CreateRing() error {
 	node.Predecessor = nil
 	for i := range node.Successors {
-		node.Successors[i] = &IdPair{ID: node.ID, Address: node.Address}
+		node.Successors[i] = &IdPair{ID: node.ID, Address: node.PublicAddress}
 	}
 	return nil
 }
@@ -164,7 +166,7 @@ func (node *Node) tryStabilizeWithSuccessor(successor *IdPair) error {
 	}
 
 	// Notify successor
-	notifyArgs := &NotifyArgs{Node: &IdPair{ID: node.ID, Address: node.Address}}
+	notifyArgs := &NotifyArgs{Node: &IdPair{ID: node.ID, Address: node.PublicAddress}}
 	_, err = CallNodeRPC[NotifyArgs, NotifyReply](successor.Address, "Node.Notify", notifyArgs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stabilize: Notify error to %s: %v\n", successor.Address, err)
@@ -194,7 +196,7 @@ func (node *Node) popUntilAliveSuccessor() *IdPair {
 
 	if liveIdx == -1 {
 		// No live successors; reset list to self.
-		self := &IdPair{ID: node.ID, Address: node.Address}
+		self := &IdPair{ID: node.ID, Address: node.PublicAddress}
 		for i := range node.Successors {
 			node.Successors[i] = self
 		}
@@ -210,7 +212,7 @@ func (node *Node) popUntilAliveSuccessor() *IdPair {
 	// Fill any nil slots (if present) with self as a safety net.
 	for i := range node.Successors {
 		if node.Successors[i] == nil {
-			node.Successors[i] = &IdPair{ID: node.ID, Address: node.Address}
+			node.Successors[i] = &IdPair{ID: node.ID, Address: node.PublicAddress}
 		}
 	}
 
@@ -218,8 +220,8 @@ func (node *Node) popUntilAliveSuccessor() *IdPair {
 }
 
 func (node *Node) fixFingers() error {
-	jumpAddress := jump(node.Address, node.nextFingerToFix)
-	successor, err := node.findSuccessorIteratively(jumpAddress, node.Address)
+	jumpAddress := jump(node.PublicAddress, node.nextFingerToFix)
+	successor, err := node.findSuccessorIteratively(jumpAddress, node.PublicAddress)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fixFingers: findSuccessor error: %v\n", err)
 		return err
@@ -249,7 +251,7 @@ func (node *Node) mergeSuccessorList(successors []*IdPair) {
 			node.Successors[i] = successors[i-1]
 		} else {
 			// Fallback to self for empty slots.
-			node.Successors[i] = &IdPair{ID: node.ID, Address: node.Address}
+			node.Successors[i] = &IdPair{ID: node.ID, Address: node.PublicAddress}
 		}
 	}
 }
@@ -263,7 +265,8 @@ func (node *Node) startMaintenence() {
 func (node *Node) PrintState() error {
 	fmt.Println("====NODE====")
 	fmt.Printf("Node ID: %s\n", node.ID.String())
-	fmt.Printf("Node Address: %s\n", node.Address)
+	fmt.Printf("Node Bind Address: %s\n", node.BindAddress)
+	fmt.Printf("Node Public Address: %s\n", node.PublicAddress)
 	for filename := range node.StoredFiles {
 		fmt.Printf("Stored file: %s\n", filename)
 	}

@@ -14,8 +14,10 @@ import (
 )
 
 func main() {
-	listenIp := flag.String("a", "0.0.0.0", "The IP address that the Chord client will bind to, as well as advertise to other nodes")
+	listenIp := flag.String("a", "0.0.0.0", "The IP address that the Chord client will bind to")
+	publicIp := flag.String("aPublic", "", "The IP address that the Chord client will advertise to other nodes (defaults to the bind address)")
 	port := flag.Int("p", 80, "Port to listen on")
+	publicPort := flag.Int("pPublic", 0, "The port that will be advertised to other nodes (defaults to the listen port)")
 	joinAddress := flag.String("ja", "", "The IP address of the machine running a Chord node. The Chord client will join this node's ring.")
 	joinPort := flag.Int("jp", 0, "The port that an existing Chord node is bound to and listening on. The Chord client will join this node's ring.")
 	stabilizeInterval := flag.Int("ts", 1000, "The time in milliseconds between invocations of 'stabilize'")
@@ -34,7 +36,19 @@ func main() {
 		}
 	}
 
-	node := MakeNode(NodeAddress(net.JoinHostPort(*listenIp, fmt.Sprint(*port))), *stabilizeInterval, *fixFingersInterval, *checkPredecessorInterval, *successorCount, id)
+	pubIp := *publicIp
+	if pubIp == "" {
+		pubIp = *listenIp
+	}
+	pubPort := *publicPort
+	if pubPort == 0 {
+		pubPort = *port
+	}
+
+	bindAddr := NodeAddress(net.JoinHostPort(*listenIp, fmt.Sprint(*port)))
+	publicAddr := NodeAddress(net.JoinHostPort(pubIp, fmt.Sprint(pubPort)))
+
+	node := MakeNode(bindAddr, publicAddr, *stabilizeInterval, *fixFingersInterval, *checkPredecessorInterval, *successorCount, id)
 	
 	if *joinAddress == "" && *joinPort == 0 {
 		node.CreateRing()
@@ -115,7 +129,7 @@ func main() {
 
 func (node *Node) lookup(filename string) error {
 	key := hashString(filename)
-	owner, err := node.findSuccessorIteratively(key, node.Address)
+	owner, err := node.findSuccessorIteratively(key, node.PublicAddress)
 	if err != nil {
 		return err
 	}
@@ -124,7 +138,7 @@ func (node *Node) lookup(filename string) error {
 	ownerAddress := owner.Address
 
 	var data []byte
-	if ownerAddress == node.Address {
+	if ownerAddress == node.PublicAddress {
 		var ok bool
 		data, ok = node.StoredFiles[filename]
 		if !ok {
@@ -153,12 +167,12 @@ func (node *Node) storeFile(filePath string) error {
 
 	filename := filepath.Base(filePath)
 	key := hashString(filename)
-	owner, err := node.findSuccessorIteratively(key, node.Address)
+	owner, err := node.findSuccessorIteratively(key, node.PublicAddress)
 	if err != nil {
 		return err
 	}
 
-	if owner.Address == node.Address {
+	if owner.Address == node.PublicAddress {
 		node.StoredFiles[filename] = data
 		fmt.Printf("Stored %s locally (ID %s)\n", filename, node.ID.String())
 		return nil
